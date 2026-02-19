@@ -1246,9 +1246,9 @@
                     };
                     addMessage('kiara', data.text, data.receivedAt || Date.now(), respDebug);
                     
-                    // For foreign sessions, auto-refresh history after a delay
+                    // For foreign sessions, poll until the assistant reply shows up in that session.
                     if (activeSessionKey && activeSessionKey !== defaultSessionKey) {
-                        setTimeout(() => refreshForeignHistory(), 2000);
+                        pollForeignReply(activeSessionKey, sentAt, 120000);
                     }
                 } else {
                     addMessage('kiara', JSON.stringify(data));
@@ -1280,9 +1280,39 @@
                     });
                 }
                 scrollToBottom();
+                return data;
             } catch(e) {
                 console.log('Failed to refresh foreign history:', e);
+                return null;
             }
+        }
+
+        async function pollForeignReply(sessionKey, sentAtMs, maxWaitMs) {
+            const started = Date.now();
+            let delay = 800;
+            showTyping(true);
+
+            while (Date.now() - started < (maxWaitMs || 120000)) {
+                const data = await refreshForeignHistory();
+                if (data && data.messages && data.messages.length) {
+                    // Find assistant messages newer than the user send time
+                    const hasReply = data.messages.some(m => {
+                        if (m.role !== 'assistant') return false;
+                        const ts = (typeof m.timestamp === 'number') ? m.timestamp : Date.parse(m.timestamp);
+                        return !isNaN(ts) && ts >= (sentAtMs || 0);
+                    });
+                    if (hasReply) {
+                        showTyping(false);
+                        return;
+                    }
+                }
+                await new Promise(res => setTimeout(res, delay));
+                // backoff up to 3s
+                delay = Math.min(3000, Math.floor(delay * 1.25));
+            }
+
+            // Timed out: stop indicator but leave chat as-is
+            showTyping(false);
         }
 
         function addMessage(type, text, timestamp, debugData) {

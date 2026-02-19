@@ -1,6 +1,11 @@
 package config
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"log"
 	"os"
@@ -14,8 +19,11 @@ type Config struct {
 	Port           string `json:"port"`
 	IPRange        string `json:"ip_range"`
 	GatewayURL     string `json:"gateway_url"`
-	GatewayToken   string `json:"gateway_token"`
-	Username       string `json:"username"`
+	GatewayToken      string `json:"gateway_token"`
+	DeviceID          string `json:"device_id"`
+	DevicePublicKey   string `json:"device_public_key"`
+	DevicePrivateKey  string `json:"device_private_key"`
+	Username          string `json:"username"`
 	PasswordHash   string `json:"password_hash"`
 	OpenClawConfig string `json:"openclaw_config"`
 	SessionKey     string `json:"session_key"`
@@ -40,6 +48,37 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.SessionKey == "" {
 		cfg.SessionKey = "agent:main"
+	}
+	changed := false
+
+	// Ensure a stable device keypair for Gateway device identity.
+	// OpenClaw expects base64url (no padding) strings.
+	if strings.TrimSpace(cfg.DevicePublicKey) == "" || strings.TrimSpace(cfg.DevicePrivateKey) == "" {
+		pub, priv, err := ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			return nil, err
+		}
+		cfg.DevicePublicKey = base64.RawURLEncoding.EncodeToString(pub)
+		cfg.DevicePrivateKey = base64.RawURLEncoding.EncodeToString(priv)
+		log.Printf("[config] generated device keypair (pub=%s...)", cfg.DevicePublicKey[:8])
+		changed = true
+	}
+
+	// DeviceID must match OpenClaw's deriveDeviceIdFromPublicKey(): sha256(raw_pubkey_bytes).hex
+	pubRaw, err := base64.RawURLEncoding.DecodeString(strings.TrimSpace(cfg.DevicePublicKey))
+	if err == nil && len(pubRaw) > 0 {
+		d := sha256.Sum256(pubRaw)
+		derived := hex.EncodeToString(d[:])
+		if strings.TrimSpace(cfg.DeviceID) != derived {
+			cfg.DeviceID = derived
+			log.Printf("[config] set device_id from public key (device_id=%s...)", cfg.DeviceID[:8])
+			changed = true
+		}
+	}
+
+	if changed {
+		// best-effort persist
+		_ = cfg.Save(path)
 	}
 	return &cfg, nil
 }

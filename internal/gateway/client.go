@@ -2,10 +2,13 @@ package gateway
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"log"
+	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -20,6 +23,9 @@ type Client struct {
 	url        string
 	token      string
 	sessionKey string
+	deviceId   string
+	devicePub  string
+	devicePriv []byte
 
 	mu      sync.Mutex
 	conn    *websocket.Conn
@@ -36,11 +42,15 @@ type Client struct {
 }
 
 // NewClient creates a new Gateway client
-func NewClient(url, token, sessionKey string) *Client {
+func NewClient(url, token, sessionKey, deviceId, devicePubKey, devicePrivKeyB64Url string) *Client {
+	priv, _ := base64.RawURLEncoding.DecodeString(strings.TrimSpace(devicePrivKeyB64Url))
 	return &Client{
 		url:        url,
 		token:      token,
 		sessionKey: sessionKey,
+		deviceId:   strings.TrimSpace(deviceId),
+		devicePub:  strings.TrimSpace(devicePubKey),
+		devicePriv: priv,
 		pending:    make(map[string]chan Msg),
 	}
 }
@@ -67,7 +77,17 @@ func (gc *Client) run() error {
 	defer cancel()
 
 	wsURL := strings.Replace(strings.Replace(gc.url, "http://", "ws://", 1), "https://", "wss://", 1)
-	conn, _, err := websocket.Dial(ctx, wsURL, nil)
+
+	// OpenClaw Gateway (newer versions) requires a valid Origin header for web-style clients.
+	// Without it the gateway rejects the WS handshake with: "origin not allowed".
+	origin := gc.url
+	// Ensure origin uses http(s) (not ws(s))
+	origin = strings.Replace(strings.Replace(origin, "ws://", "http://", 1), "wss://", "https://", 1)
+
+	h := http.Header{}
+	h.Set("Origin", origin)
+
+	conn, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{HTTPHeader: h})
 	if err != nil {
 		return err
 	}
@@ -94,10 +114,27 @@ func (gc *Client) run() error {
 	time.Sleep(50 * time.Millisecond)
 
 	// connect handshake
+	signedAt := time.Now().UnixMilli()
+	clientId := "gateway-client"
+	clientMode := "webchat"
+	scopes := []string{"operator.admin", "operator.write", "operator.read"}
+	payload := buildDeviceAuthPayload("v1", gc.deviceId, clientId, clientMode, "operator", scopes, signedAt, gc.token, "")
+	sig := ""
+	if len(gc.devicePriv) == ed25519.PrivateKeySize {
+		sigBytes := ed25519.Sign(ed25519.PrivateKey(gc.devicePriv), []byte(payload))
+		sig = base64.RawURLEncoding.EncodeToString(sigBytes)
+	}
+
 	_, err = gc.call(ctx, "connect", map[string]interface{}{
 		"minProtocol": 3, "maxProtocol": 3,
-		"client": map[string]string{"id": "gateway-client", "version": "1.0.0", "platform": "go", "mode": "webchat"},
-		"role": "operator", "scopes": []string{"operator.admin"},
+		"client": map[string]string{"id": clientId, "version": "1.0.0", "platform": "go", "mode": clientMode},
+		"device": map[string]interface{}{
+			"id":        gc.deviceId,
+			"publicKey":  gc.devicePub,
+			"signature":  sig,
+			"signedAt":   signedAt,
+		},
+		"role": "operator", "scopes": scopes,
 		"auth": map[string]string{"token": gc.token},
 	})
 	if err != nil {
@@ -108,6 +145,30 @@ func (gc *Client) run() error {
 	log.Printf("[gw] connected")
 
 	return <-readErr
+}
+
+func buildDeviceAuthPayload(version, deviceId, clientId, clientMode, role string, scopes []string, signedAtMs int64, token, nonce string) string {
+	// Must match OpenClaw buildDeviceAuthPayload():
+	//   v1|deviceId|clientId|clientMode|role|scope1,scope2|signedAtMs|token
+	// v2 adds |nonce at the end.
+	sc := strings.Join(scopes, ",")
+	if token == "" {
+		token = ""
+	}
+	base := []string{
+		version,
+		deviceId,
+		clientId,
+		clientMode,
+		role,
+		sc,
+		strconv.FormatInt(signedAtMs, 10),
+		token,
+	}
+	if version == "v2" {
+		base = append(base, nonce)
+	}
+	return strings.Join(base, "|")
 }
 
 func (gc *Client) dispatch(msg Msg) {

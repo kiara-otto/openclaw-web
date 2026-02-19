@@ -29,7 +29,7 @@ func main() {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 
-	gw := gateway.NewClient(cfg.GatewayURL, cfg.GatewayToken, cfg.SessionKey)
+	gw := gateway.NewClient(cfg.GatewayURL, cfg.GatewayToken, cfg.SessionKey, cfg.DeviceID, cfg.DevicePublicKey, cfg.DevicePrivateKey)
 	gw.Start()
 
 	state := handlers.NewAppState(cfg, gw)

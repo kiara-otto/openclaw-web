@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -373,7 +374,7 @@ func (s *AppState) HandleHistory(w http.ResponseWriter, r *http.Request) {
 func (s *AppState) extractContent(raw json.RawMessage) string {
 	var str string
 	if json.Unmarshal(raw, &str) == nil {
-		return s.stripModelTags(str)
+		return s.stripUserTimestampPrefix(s.stripOpenClawMeta(s.stripModelTags(str)))
 	}
 	var blocks []struct {
 		Type string `json:"type"`
@@ -386,9 +387,9 @@ func (s *AppState) extractContent(raw json.RawMessage) string {
 				parts = append(parts, b.Text)
 			}
 		}
-		return s.stripModelTags(strings.Join(parts, ""))
+		return s.stripUserTimestampPrefix(s.stripOpenClawMeta(s.stripModelTags(strings.Join(parts, ""))))
 	}
-	return s.stripModelTags(string(raw))
+	return s.stripUserTimestampPrefix(s.stripOpenClawMeta(s.stripModelTags(string(raw))))
 }
 
 func (s *AppState) stripModelTags(str string) string {
@@ -399,6 +400,57 @@ func (s *AppState) stripModelTags(str string) string {
 		str = strings.TrimSpace(str)
 	}
 	return str
+}
+
+var userTimestampPrefixRe = regexp.MustCompile(`^\[[A-Za-z]{3}\s+\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}(?::\d{2})?\s+GMT[+-]\d+\]\s+`)
+
+func (s *AppState) stripUserTimestampPrefix(str string) string {
+	str = strings.TrimSpace(str)
+	return strings.TrimSpace(userTimestampPrefixRe.ReplaceAllString(str, ""))
+}
+
+// stripOpenClawMeta removes gateway/UI debug envelopes that sometimes end up in transcripts.
+func (s *AppState) stripOpenClawMeta(str string) string {
+	str = strings.TrimSpace(str)
+	if str == "" {
+		return str
+	}
+
+	lines := strings.Split(str, "\n")
+	out := make([]string, 0, len(lines))
+	inMetaBlock := false
+	inCodeFence := false
+	for _, line := range lines {
+		trim := strings.TrimSpace(line)
+
+		// Drop leading "System:" noise lines.
+		if len(out) == 0 && strings.HasPrefix(trim, "System:") {
+			continue
+		}
+
+		// Remove the "Conversation info (untrusted metadata):```json ...```" block.
+		if strings.HasPrefix(trim, "Conversation info (untrusted metadata):") {
+			inMetaBlock = true
+			inCodeFence = false
+			continue
+		}
+		if inMetaBlock {
+			if strings.HasPrefix(trim, "```") {
+				// toggle fence
+				inCodeFence = !inCodeFence
+				// if we just closed the fence, end meta block
+				if !inCodeFence {
+					inMetaBlock = false
+				}
+			}
+			continue
+		}
+
+		out = append(out, line)
+	}
+
+	res := strings.TrimSpace(strings.Join(out, "\n"))
+	return res
 }
 
 // HandleMessageLog returns raw JSONL transcript
@@ -498,14 +550,19 @@ func (s *AppState) HandleSessionReset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.gw.Connected.Load() {
-		_, err := s.gw.Call("sessions.delete", map[string]interface{}{"key": s.config.SessionKey})
+		// sessions.delete requires operator.admin in newer OpenClaw versions.
+		// sessions.reset achieves the same UX (fresh session) with lower privileges.
+		_, err := s.gw.Call("sessions.reset", map[string]interface{}{
+			"key":    s.config.SessionKey,
+			"reason": "reset",
+		})
 		if err != nil {
 			log.Printf("[session-reset] error: %v", err)
 			w.WriteHeader(http.StatusInternalServerError)
 			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 			return
 		}
-		log.Printf("[session-reset] session %s deleted", s.config.SessionKey)
+		log.Printf("[session-reset] session %s reset", s.config.SessionKey)
 	}
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }
