@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>{{ if .DisplayName }}{{ .DisplayName }}{{ else }}Kiara{{ end }} - Login</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🦞</text></svg>">
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { 
+            background: #000; 
+            color: #0f0; 
+            font-family: 'Courier New', monospace;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .login-box {
+            border: 1px solid #0f0;
+            padding: 30px;
+            width: 350px;
+        }
+        h1 { color: #0f0; text-shadow: 0 0 10px #0f0; margin-bottom: 20px; text-align: center; }
+        input {
+            background: #111;
+            border: 1px solid #0f0;
+            color: #0f0;
+            padding: 10px;
+            font-family: inherit;
+            width: 100%;
+            margin-bottom: 15px;
+            font-size: 14px;
+        }
+        input:focus { outline: none; border-color: #0f0; box-shadow: 0 0 5px #0f0; }
+        .btn {
+            background: transparent;
+            border: 1px solid #0f0;
+            color: #0f0;
+            padding: 10px 20px;
+            cursor: pointer;
+            font-family: inherit;
+            font-size: 14px;
+            width: 100%;
+            transition: all 0.3s;
+        }
+        .btn:hover { background: #0f0; color: #000; }
+        .error { color: #f00; margin-bottom: 15px; font-size: 12px; }
+    </style>
+</head>
+<body>
+    <div class="login-box">
+        <h1>⬡ {{ if .DisplayName }}{{ .DisplayName }}{{ else }}Kiara{{ end }}</h1>
+        {{if .}}{{if .Error}}<div class="error">{{.Error}}</div>{{end}}{{end}}
+        <form method="POST" action="/api/login">
+            <input type="text" name="username" placeholder="Username" autocomplete="username" autofocus required>
+            <input type="password" name="password" placeholder="Password" autocomplete="current-password" required>
+            <button type="submit" class="btn">Login</button>
+        </form>
+    </div>
+</body>
+</html>
