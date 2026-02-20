@@ -1,291 +1,304 @@
-# Gateway-Setup für kiara-web
+# GATEWAY-SETUP.md — OpenClaw Web + Gateway Integration
 
-## ✅ Minimale OpenClaw-Config-Anforderungen
+Diese Anleitung erklärt, wie du OpenClaw Web mit deinem OpenClaw Gateway verbindest.
 
-Damit die Web-App funktioniert, muss eure `~/.openclaw/openclaw.json` folgende Gateway-Einstellungen haben:
+## Voraussetzungen
 
-### 1. Gateway muss aktiviert sein
+- OpenClaw Gateway läuft (mind. v2026.2.0).
+- Vault ist **geöffnet** (wird bei Session-Start geprüft).
+- Go 1.25.6+ installiert.
 
-```json
-{
-  "gateway": {
-    "port": 18789,
-    "mode": "local",
-    "bind": "loopback",  // oder "network" (siehe unten)
-    "auth": {
-      "mode": "token",
-      "token": "EUER_GATEWAY_TOKEN_HIER"
-    }
-  }
-}
-```
+## Schritt 1: Gateway-Token extrahieren
 
-### 2. Bind-Modus wählen
-
-**Wichtig:** Der `bind`-Modus entscheidet, WO die Web-App laufen kann:
-
-| Szenario | `bind`-Wert | Gateway-URL in `config.json` |
-|----------|-------------|------------------------------|
-| Web-App läuft auf **gleichem Computer** wie OpenClaw (z.B. beide auf Raspberry Pi) | `"loopback"` | `http://localhost:18789` |
-| Web-App läuft auf **anderem Gerät** als OpenClaw (z.B. Web-App auf PC, OpenClaw auf Server) | `"network"` | `http://<IP-DES-OPENCLAW-HOSTS>:18789` |
-
-**Standard ist `loopback`** → funktioniert nur lokal!
-
-**📍 Typisches Setup (Raspberry Pi):**
-```
-┌─────────────────────────────────────┐
-│  Raspberry Pi (z.B. 192.168.1.50)   │
-│                                     │
-│  ┌─────────────┐                   │
-│  │  OpenClaw   │◄─────localhost────┤
-│  │  :18789     │                   │
-│  └─────────────┘                   │
-│         ▲                           │
-│         │ localhost                │
-│         ▼                           │
-│  ┌─────────────┐                   │
-│  │  Web-App    │                   │
-│  │  :8080      │◄────Benutzer von außen (http://192.168.1.50:8080)
-│  └─────────────┘                   │
-└─────────────────────────────────────┘
-
-Config: bind: "loopback", gateway_url: "http://localhost:18789"
-```
-
-### 3. Config ändern (falls nötig)
+Das Token findest du in deiner OpenClaw-Config:
 
 ```bash
-# 1. OpenClaw stoppen
-openclaw gateway stop
+# Vollständige Config anzeigen
+cat ~/.openclaw/openclaw.json | grep -A10 '"gateway"'
 
-# 2. Config bearbeiten
-nano ~/.openclaw/openclaw.json
-
-# 3. Unter "gateway" -> "bind" ändern zu "network":
-"gateway": {
-  "bind": "network",
-  ...
-}
-
-# 4. Gateway neu starten
-openclaw gateway start
-
-# 5. Prüfen ob Gateway läuft
-openclaw status
+# Nur Token extrahieren
+jq -r '.gateway.auth.token' ~/.openclaw/openclaw.json
 ```
 
-## 🔍 Gateway-Status prüfen
+Kopiere den Token-Wert (lange hex-Zeichenkette) in `config.json` unter `gateway_token`.
+
+## Schritt 2: Gateway-URL ermitteln
+
+Standard-URL: `http://localhost:18789` (wenn Gateway und Web auf **gleichem Gerät** laufen).
+
+Falls Gateway auf anderem Host:
 
 ```bash
-# Gateway läuft?
-openclaw status
-
-# Gateway-Logs ansehen
-tail -f ~/.openclaw/logs/gateway.log
-
-# Gateway-Verbindung testen (von anderem Gerät)
-curl http://<IP-ADRESSE>:18789/health
-# Sollte antworten mit: {"ok":true}
+# Config prüfen
+jq -r '.gateway.url // "http://localhost:18789"' ~/.openclaw/openclaw.json
 ```
 
-## 📋 Vollständige Config-Beispiele
+- **Raspberry Pi / Server-Setup:** Gateway auf Pi (`http://<pi-ip>:18789`), Web auf Laptop (`http://127.0.0.1:18789` → funktioniert nicht!). In `config.json` dann: `gateway_url: "http://<pi-ip>:18789"`.
+- **Laptop-Setup:** Beide lokal → `http://localhost:18789`.
 
-**Wichtig zu verstehen:**
+## Schritt 3: Device Keys generieren (falls erforderlich)
 
-- **`bind: "loopback"`** → Gateway hört nur auf `127.0.0.1` (localhost)
-  - ✅ Web-App auf **gleichem** Host kann verbinden
-  - ❌ Web-App auf **anderem** Host kann NICHT verbinden
+Die Web-App authentifiziert sich als **Operator-Client** mit dem Gateway-Token. **Kein Pairing nötig!**
 
-- **`bind: "network"`** → Gateway hört auf allen Netzwerk-Interfaces
-  - ✅ Web-App auf gleichem Host kann verbinden
-  - ✅ Web-App auf anderem Host kann verbinden (über LAN-IP)
+**Falls Device Keys in config.json erforderlich (z.B. für erweiterte Features):**
 
-### Beispiel 1: Web-App läuft LOKAL (gleicher Computer, z.B. Raspberry Pi)
+### Device ID + Keys erzeugen
 
-**Szenario:** OpenClaw + Web-App laufen beide auf dem Raspberry Pi. Benutzer greifen von außen auf die Web-App zu (z.B. `http://192.168.1.50:8080`), aber intern spricht die Web-App mit OpenClaw über `localhost`.
+```bash
+# Neues Device-Paar generieren (Ed25519)
+openclaw devices generate --json | jq '.deviceId, .publicKey, .privateKey'
+```
 
-**`~/.openclaw/openclaw.json` (auf dem Raspberry Pi):**
-```json
-{
-  "gateway": {
-    "port": 18789,
-    "mode": "local",
-    "bind": "loopback",
-    "auth": {
-      "mode": "token",
-      "token": "939572c3d66a2293ebee19e0734ba4bbc7d8876158710d09"
-    }
-  }
+Oder manuell (Go):
+
+```go
+package main
+
+import (
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/base64"
+	"fmt"
+)
+
+func main() {
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	deviceId := base64.RawURLEncoding.EncodeToString(rand.Reader.Read(make([]byte, 32))) // 32 random bytes
+	fmt.Printf("device_id: %s\n", deviceId)
+	fmt.Printf("device_public_key: %s\n", base64.RawURLEncoding.EncodeToString(pub))
+	fmt.Printf("device_private_key: %s\n", base64.RawURLEncoding.EncodeToString(append(priv[:32], priv[32:]...)))
 }
 ```
 
-**`config.json` der Web-App (ebenfalls auf dem Raspberry Pi):**
+**go run main.go** → kopiere die Ausgabe in `config.json`.
+
+**Hinweis:** Die Keys sind **optional** — die Web-App funktioniert mit Token allein. Nur für **erweiterte Features** (z.B. Node-Control, Pairing) nötig.
+
+## Schritt 4: config.json finalisieren
+
+Beispiel (anpassen!):
+
 ```json
 {
   "port": "8080",
   "ip_range": "0.0.0.0/0",
   "gateway_url": "http://localhost:18789",
-  "gateway_token": "939572c3d66a2293ebee19e0734ba4bbc7d8876158710d09",
+  "gateway_token": "dein-aktualisiertes-gateway-token-hier",
+  "device_id": "optional-device-id-aus-oben",
+  "device_public_key": "optional-pubkey",
+  "device_private_key": "optional-privkey-base64",
+  "username": "admin",
+  "password_hash": "base64-sha256-hash-deines-passworts",
+  "openclaw_config": "/Users/christianotto/.openclaw/openclaw.json",
+  "session_key": "agent:main:kiara-web",
+  "display_name": "Kiara"
+}
+```
+
+**Passwort-Hash generieren:**
+```bash
+echo -n "mein-sicheres-passwort" | openssl dgst -sha256 -binary | base64
+```
+
+## Schritt 5: Testen
+
+### Gateway-Verbindung prüfen
+
+```bash
+# Health-Check
+curl http://localhost:18789/health
+
+# Erwartete Antwort: {"ok":true}
+```
+
+### Web-App starten (Test-Modus)
+
+```bash
+cd openclaw-web
+go run . -config config.json
+```
+
+**Erfolgreiche Logs:**
+```
+[gw] connected
+Starting Kiara on :8080 (allowed: 0.0.0.0/0)
+Gateway: http://127.0.0.1:18789 | Session: agent:main:kiara-web
+```
+
+### Browser-Test
+
+- Öffne `http://localhost:8080` (oder IP:Port).
+- Login mit Username/Password.
+- **Status:** Sollte "● Online" zeigen.
+- **Model-Picker:** Sollte Models laden (sonst Gateway-Problem).
+
+## Häufige Probleme
+
+### ❌ "gw] error: failed to read JSON message"
+
+**Ursache:** Gateway-Token falsch oder Gateway nicht erreichbar.
+
+**Fix:**
+1. Token prüfen: `jq -r '.gateway.auth.token' ~/.openclaw/openclaw.json`
+2. Gateway-URL testen: `curl http://<url>/health`
+3. OpenClaw-Config prüfen: `openclaw doctor`
+
+### ❌ "unauthorized" beim Login
+
+**Ursache:** Password-Hash falsch.
+
+**Fix:**
+- Neuer Hash: `echo -n "passwort" | openssl dgst -sha256 -binary | base64`
+- In `config.json` eintragen.
+- `./openclaw-web` neu starten.
+
+### ❌ Models laden nicht (leere Liste)
+
+**Ursache:** `openclaw_config` Pfad falsch oder Gateway nicht connected.
+
+**Fix:**
+1. Pfad prüfen: `ls -la ~/.openclaw/openclaw.json`
+2. Models manuell testen: `openclaw models list`
+3. Logs prüfen: `tail -f openclaw-web.log`
+
+### ❌ "connection refused" zu Gateway
+
+**Ursache:** Gateway läuft nicht oder falscher Port/Host.
+
+**Fix:**
+1. Gateway-Status: `openclaw gateway status`
+2. Gateway starten: `openclaw gateway start`
+3. URL anpassen: `http://<ip>:18789` (nicht localhost, wenn remote).
+
+### ❌ Vault-Fehler (optional)
+
+**Ursache:** Vault geschlossen, aber `vault_enabled: true`.
+
+**Fix:**
+- Vault öffnen: `./usercommands/vaultctl unlock`
+- Oder in `config.json`: `"vault_enabled": false`
+
+## Erweiterte Konfiguration
+
+### Mehrere Sessions
+
+Die Web-App kann **verschiedene Sessions** verwalten (z.B. "Kiara", "Coding", "Home").
+
+In `config.json`:
+```json
+{
   "session_key": "agent:main:kiara-web"
 }
 ```
 
-**Zugriff von außen:** `http://192.168.1.50:8080` (IP des Raspberry)
+**Format:** `agent:<agent-id>:<session-name>`
 
-### Beispiel 2: Web-App läuft auf ANDEREM GERÄT (z.B. Raspberry Pi)
+- `agent-id`: z.B. `main` (Standard).
+- `session-name`: Eigener Name (z.B. `kiara-web`, `coding-assistant`).
 
-**OpenClaw-Host (z.B. Mac/PC mit IP 192.168.1.100):**
+**Mehrere Sessions in OpenClaw:**
+- In `~/.openclaw/openclaw.json`: `"agents": { "main": { ... }, "coding": { ... } }`
+- Sessions pro Agent: `~/.openclaw/agents/<agent-id>/sessions/sessions.json`
 
-**`~/.openclaw/openclaw.json`:**
+### IP-Range einschränken
+
+Sicherheit: Nur bestimmte IPs erlauben.
+
 ```json
 {
-  "gateway": {
-    "port": 18789,
-    "mode": "local",
-    "bind": "network",
-    "auth": {
-      "mode": "token",
-      "token": "939572c3d66a2293ebee19e0734ba4bbc7d8876158710d09"
+  "ip_range": "10.9.9.0/24"  // Dein LAN
+}
+```
+
+**Für öffentlichen Zugriff:** `"ip_range": "0.0.0.0/0"` (nicht empfohlen ohne HTTPS).
+
+### HTTPS (Reverse Proxy)
+
+Mit Nginx/Caddy als Proxy:
+
+**Nginx-Beispiel:**
+```
+server {
+    listen 443 ssl;
+    server_name openclaw.yourdomain.com;
+
+    ssl_certificate /path/to/cert.pem;
+    ssl_certificate_key /path/to/key.pem;
+
+    location / {
+        proxy_pass http://localhost:8080;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
     }
-  }
 }
 ```
 
-**Web-App (z.B. auf Raspberry Pi):**
+## Deployment-Beispiele
 
-**`config.json`:**
-```json
-{
-  "gateway_url": "http://192.168.1.100:18789",
-  "gateway_token": "939572c3d66a2293ebee19e0734ba4bbc7d8876158710d09"
-}
-```
+### Raspberry Pi (Pi 5)
 
-## ⚠️ Häufige Fehler
-
-### Fehler: "connection refused"
-
-**Ursache:** Gateway nicht erreichbar
-
-**Lösung:**
-1. Gateway läuft? → `openclaw status`
-2. Richtiger `bind`-Modus? → siehe Tabelle oben
-3. Firewall blockiert Port 18789?
-
-### Fehler: "unauthorized" / "authentication error"
-
-**Ursache:** Token falsch oder fehlt
-
-**Lösung:**
-1. Token aus `~/.openclaw/openclaw.json` kopieren
-2. Exakt in Web-App `config.json` unter `gateway_token` eintragen
-3. Web-App neu starten
-
-### Fehler: "Gateway not connected" im Web-Interface
-
-**Ursache:** WebSocket-Verbindung scheitert
-
-**Lösung:**
-1. Gateway-Logs prüfen: `tail -f ~/.openclaw/logs/gateway.log`
-2. Web-App-Logs prüfen: `tail -f openclaw-web.log`
-3. Token und URL nochmal kontrollieren
-
-## 🎯 Schnell-Check
-
-**Führe diese Befehle auf dem Host aus (wo OpenClaw läuft):**
-
-```bash
-# 1. Gateway läuft?
-openclaw status
-
-# 2. Gateway-Config anzeigen
-jq '.gateway' ~/.openclaw/openclaw.json
-
-# 3. Token anzeigen
-jq -r '.gateway.auth.token' ~/.openclaw/openclaw.json
-
-# 4. Gateway-Verbindung testen (lokal)
-curl http://localhost:18789/health
-# Sollte antworten: {"ok":true}
-```
-
-**Falls Web-App auf ANDEREM Gerät läuft:**
-
-```bash
-# IP-Adresse des OpenClaw-Hosts ermitteln
-ifconfig | grep "inet " | grep -v 127.0.0.1
-# oder
-ip addr show | grep "inet " | grep -v 127.0.0.1
-
-# Von anderem Gerät aus Gateway testen:
-curl http://<IP-ADRESSE>:18789/health
-# z.B.: curl http://192.168.1.50:18789/health
-```
-
-Wenn alle Tests funktionieren, sollte die Web-App verbinden können!
-
-## 🔒 Sicherheit
-
-Bei `bind: "network"` ist das Gateway im lokalen Netzwerk erreichbar. Schützt den Zugang:
-
-1. **IP-Range** in Web-App `config.json` beschränken:
-   ```json
-   "ip_range": "192.168.1.0/24"
-   ```
-
-2. **Starkes Token** verwenden (mindestens 32 Zeichen)
-
-3. **Firewall-Regel** (nur aus lokalem Netzwerk):
+1. **OpenClaw installieren:** Siehe OpenClaw-Docs.
+2. **Gateway starten:** `openclaw gateway start`
+3. **Web-App:** 
    ```bash
-   # macOS (falls gewünscht)
-   sudo /usr/libexec/ApplicationFirewall/socketfilterfw --add /opt/homebrew/bin/openclaw
+   cd openclaw-web
+   go build -o openclaw-web .
+   nohup ./openclaw-web &
    ```
+4. **Firewall:** Port 8080 öffnen (ufw/nginx).
+5. **Zugriff:** `http://<pi-ip>:8080`
 
-## ❓ Häufige Fragen
+### VPS / Server
 
-### Beide laufen auf dem Raspberry Pi — warum kann ich die Web-App von meinem PC aus aufrufen?
+1. **OpenClaw:** `npm i -g openclaw`
+2. **Gateway:** `openclaw gateway start --bind tailnet`
+3. **Web-App:** Go-Binary kompilieren + systemd-Service.
+4. **Domain:** Nginx-Proxy + Let's Encrypt.
 
-**Antwort:** Die Web-App ist ein **HTTP-Server** auf Port 8080, der von außen erreichbar ist (das regelt `ip_range` in der Web-App-Config). Die **interne Kommunikation** zwischen Web-App und OpenClaw-Gateway läuft aber über `localhost:18789` auf dem Raspberry Pi selbst.
+### Laptop / Development
 
-```
-Du (PC) ──HTTP (8080)──> Raspberry Pi (Web-App)
-                              │
-                              └──WebSocket (localhost:18789)──> OpenClaw Gateway
-```
+1. **Gateway:** `openclaw gateway start --bind loopback`
+2. **Web-App:** `go run .` (im Projekt-Ordner).
+3. **Zugriff:** Nur lokal (`http://localhost:8080`).
 
-### Muss ich `bind: "network"` verwenden, wenn ich die Web-App von außen aufrufe?
+## Logs + Debugging
 
-**Nein!** Wenn Web-App und OpenClaw auf dem **gleichen Host** laufen, reicht `bind: "loopback"`. Die Web-App spricht OpenClaw intern über `localhost` an. Nur **du** greifst von außen auf die Web-App zu (Port 8080), nicht auf das Gateway (Port 18789).
-
-### Wann brauche ich `bind: "network"`?
-
-Nur wenn OpenClaw und Web-App auf **verschiedenen Geräten** laufen:
-
-- **OpenClaw:** Server/Desktop (IP: 192.168.1.100)
-- **Web-App:** Raspberry Pi (IP: 192.168.1.50)
-- **Web-App config.json:** `"gateway_url": "http://192.168.1.100:18789"`
-
-In diesem Fall muss das Gateway auf dem Server mit `bind: "network"` laufen.
-
-## 📞 Support
-
-Falls es immer noch nicht klappt, sammle diese Infos:
+### Web-App Logs
 
 ```bash
-# 1. OpenClaw-Version
-openclaw --version
+# Aktuelle Logs
+tail -f openclaw-web.log
 
-# 2. Gateway-Status
-openclaw status
-
-# 3. Gateway-Config
-jq '.gateway' ~/.openclaw/openclaw.json
-
-# 4. Letzte 20 Zeilen Gateway-Log
-tail -20 ~/.openclaw/logs/gateway.log
-
-# 5. Web-App-Log (erste Connection-Versuche)
-tail -50 openclaw-web.log | grep -A5 -B5 "gw"
+# Gateway-Verbindung prüfen
+grep "\[gw\]" openclaw-web.log
 ```
 
-Dann kann man gezielt debuggen!
+**Erfolgreich:**
+```
+[gw] connected
+[models] loaded 21 models via openclaw CLI (merge mode)
+```
+
+### OpenClaw Gateway Logs
+
+```bash
+# Gateway-Logs
+openclaw gateway log
+
+# Vollständig
+tail -f ~/.openclaw/logs/gateway.log
+```
+
+## Nächste Schritte
+
+1. **Starten:** `./openclaw-web`
+2. **Login:** Mit Username/Password.
+3. **Test:** Model-Picker öffnen → Models laden.
+4. **Produktion:** systemd-Service einrichten.
+
+Falls Probleme: `openclaw doctor` + `openclaw gateway status` laufen lassen und die Ausgabe teilen!
+
+---
+*Erstellt: 2026-02-20 | Letzte Änderung: 2026-02-20*
