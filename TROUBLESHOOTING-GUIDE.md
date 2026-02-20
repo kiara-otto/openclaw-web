@@ -2,7 +2,7 @@
 
 Komplette Schritt-für-Schritt-Anleitung zur Einrichtung der openclaw-web App mit allen notwendigen Checks und Troubleshooting-Schritten.
 
-**Repo:** https://github.com/kiara-otto/openclaw-web
+**Repo:** <REPO_URL> (z.B. euer Fork / eure interne Gitea-URL)
 
 ## 🎯 Übersicht
 
@@ -168,7 +168,7 @@ cat config.json
   "username": "admin",
   "password_hash": "jGl25bVBBBW96Qi9Te4V37Fnqchz/Eu4qB9vKrRIqRg=",
   "session_key": "agent:main:openclaw-web",
-  "display_name": "Kiara"
+  "display_name": "OpenClaw Web"
 }
 ```
 

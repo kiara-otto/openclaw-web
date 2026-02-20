@@ -90,8 +90,8 @@ Beispiel (anpassen!):
   "username": "admin",
   "password_hash": "base64-sha256-hash-deines-passworts",
   "openclaw_config": "/Users/christianotto/.openclaw/openclaw.json",
-  "session_key": "agent:main:kiara-web",
-  "display_name": "Kiara"
+  "session_key": "agent:main:openclaw-web",
+  "display_name": "OpenClaw Web"
 }
 ```
 
@@ -121,8 +121,8 @@ go run . -config config.json
 **Erfolgreiche Logs:**
 ```
 [gw] connected
-Starting Kiara on :8080 (allowed: 0.0.0.0/0)
-Gateway: http://127.0.0.1:18789 | Session: agent:main:kiara-web
+Starting OpenClaw Web on :8080 (allowed: 0.0.0.0/0)
+Gateway: http://127.0.0.1:18789 | Session: agent:main:openclaw-web
 ```
 
 ### Browser-Test
@@ -182,19 +182,19 @@ Gateway: http://127.0.0.1:18789 | Session: agent:main:kiara-web
 
 ### Mehrere Sessions
 
-Die Web-App kann **verschiedene Sessions** verwalten (z.B. "Kiara", "Coding", "Home").
+Die Web-App kann **verschiedene Sessions** verwalten (z.B. "OpenClaw Web", "Coding", "Home").
 
 In `config.json`:
 ```json
 {
-  "session_key": "agent:main:kiara-web"
+  "session_key": "agent:main:openclaw-web"
 }
 ```
 
 **Format:** `agent:<agent-id>:<session-name>`
 
 - `agent-id`: z.B. `main` (Standard).
-- `session-name`: Eigener Name (z.B. `kiara-web`, `coding-assistant`).
+- `session-name`: Eigener Name (z.B. `openclaw-web`, `coding-assistant`).
 
 **Mehrere Sessions in OpenClaw:**
 - In `~/.openclaw/openclaw.json`: `"agents": { "main": { ... }, "coding": { ... } }`

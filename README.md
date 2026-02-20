@@ -7,8 +7,9 @@ Einfaches Web-Interface für OpenClaw.
 ### 1. Klonen
 
 ```bash
-git clone https://github.com/kiara-otto/openclaw-web.git
-cd <projekt-name>
+# entweder euer eigenes Repo/Fork …
+git clone <REPO_URL>
+cd openclaw-web
 ```
 
 ### 2. Go installieren
@@ -86,7 +87,7 @@ Dann die `config.json` anpassen:
 | `username` | ✅ | Login-Benutzername |
 | `password_hash` | ✅ | **SHA-256 Hash des Passworts** (Base64-kodiert, siehe unten) |
 | `openclaw_config` | ❌ | Pfad zur OpenClaw-Config. **Standard:** `$HOME/.openclaw/openclaw.json`. Nur nötig wenn eure Config woanders liegt. |
-| `session_key` | ❌ | Session-Key im Format `agent:main:<Name>`. **Beispiel:** `agent:main:wohnzimmer` oder `agent:main:mein-assistant`. **Das `:Name` am Ende ist zwingend erforderlich!** Standard: `agent:main:kiara-web`. |
+| `session_key` | ❌ | Session-Key im Format `agent:main:<Name>`. **Beispiel:** `agent:main:wohnzimmer` oder `agent:main:mein-assistant`. **Das `:Name` am Ende ist zwingend erforderlich!** Standard: `agent:main:openclaw-web`. |
 | `display_name` | ❌ | Anzeigename des Assistants (Default: wird aus session_key abgeleitet) |
 | `vault_enabled` | ❌ | Vault-Steuerung im Menü anzeigen (`true`/`false`). **Standard:** `true`. Auf `false` setzen wenn kein OpenClaw Vault vorhanden. |
 

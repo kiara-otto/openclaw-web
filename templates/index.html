@@ -1,11 +1,11 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>{{ if .DisplayName }}{{ .DisplayName }}{{ else }}Kiara{{ end }}</title>
+    <title>{{ if .DisplayName }}{{ .DisplayName }}{{ else }}OpenClaw Web{{ end }}</title>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, interactive-widget=resizes-content">
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🦞</text></svg>">
-    <script>var DISPLAY_NAME = {{ if .DisplayName }}"{{ .DisplayName }}"{{ else }}"Kiara"{{ end }};</script>
+    <script>var DISPLAY_NAME = {{ if .DisplayName }}"{{ .DisplayName }}"{{ else }}"OpenClaw Web"{{ end }};</script>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         html { height: 100%; overflow: hidden; }
@@ -419,7 +419,7 @@
         .msg { max-width: 85%; word-wrap: break-word; white-space: pre-wrap; }
         .msg-wrapper { display: flex; flex-direction: column; max-width: 85%; }
         .msg-wrapper.user { align-self: flex-end; align-items: flex-end; }
-        .msg-wrapper.kiara { align-self: flex-start; align-items: flex-start; }
+        .msg-wrapper.openclaw-web { align-self: flex-start; align-items: flex-start; }
         .msg-wrapper.error { align-self: flex-start; align-items: flex-start; }
         .msg-wrapper .msg { max-width: 100%; align-self: auto; }
         .msg.user {
@@ -429,7 +429,7 @@
             padding: 8px 12px;
             border-radius: 12px 12px 4px 12px;
         }
-        .msg.kiara {
+        .msg.openclaw-web {
             color: #0f0;
             background: #0a1a0a;
             border: 1px solid #0a3a0a;
@@ -449,7 +449,7 @@
             border-radius: 12px 12px 0 12px;
             border-bottom: none;
         }
-        .msg-wrapper.has-time .msg.kiara {
+        .msg-wrapper.has-time .msg.openclaw-web {
             border-radius: 12px 12px 12px 0;
             border-bottom: none;
         }
@@ -470,8 +470,8 @@
             border-top: none;
             border-radius: 0 0 4px 8px;
         }
-        /* Kiara: timestamp flag bottom-left */
-        .msg-wrapper.kiara .msg-time {
+        /* OpenClaw Web: timestamp flag bottom-left */
+        .msg-wrapper.openclaw-web .msg-time {
             background: #090;
             border: 1px solid #0a3a0a;
             border-top: none;
@@ -789,7 +789,7 @@
     <!-- TOP BAR -->
     <div class="topbar">
         <div class="topbar-left">
-            <span class="topbar-logo">🦞 {{ if .DisplayName }}{{ .DisplayName }}{{ else }}Kiara{{ end }}</span>
+            <span class="topbar-logo">🦞 {{ if .DisplayName }}{{ .DisplayName }}{{ else }}OpenClaw Web{{ end }}</span>
         </div>
         <div class="topbar-right">
             <span class="info-pill model" id="modelPill" onclick="openModelPicker()" title="Click to change model">...</span>
@@ -822,7 +822,7 @@
         </div>
         <form class="chat-input-bar" autocomplete="off" onsubmit="return false;" role="presentation">
             <button type="button" id="refreshBtn" onclick="refreshChat()" title="Chat neu laden">↻</button>
-            <input type="search" id="messageInput" name="q" placeholder="Nachricht an Kiara..." autocomplete="nope" role="presentation" onkeypress="if(event.key==='Enter'&&!sending)sendMessage()" autofocus>
+            <input type="search" id="messageInput" name="q" placeholder="Nachricht an OpenClaw Web..." autocomplete="nope" role="presentation" onkeypress="if(event.key==='Enter'&&!sending)sendMessage()" autofocus>
             <button type="button" id="sendBtn" onclick="sendMessage()">➤</button>
         </form>
     </div>
@@ -1246,14 +1246,14 @@
                         durationMs: (data.receivedAt||0) - (data.sentAt||0),
                         httpResponse: data
                     };
-                    addMessage('kiara', data.text, data.receivedAt || Date.now(), respDebug);
+                    addMessage('openclaw-web', data.text, data.receivedAt || Date.now(), respDebug);
                     
                     // For foreign sessions, poll until the assistant reply shows up in that session.
                     if (activeSessionKey && activeSessionKey !== defaultSessionKey) {
                         pollForeignReply(activeSessionKey, sentAt, 120000);
                     }
                 } else {
-                    addMessage('kiara', JSON.stringify(data));
+                    addMessage('openclaw-web', JSON.stringify(data));
                 }
                 refreshInfo();
             } catch(e) {
@@ -1276,7 +1276,7 @@
                 chat.innerHTML = '';
                 if (data.messages && data.messages.length) {
                     data.messages.forEach(m => {
-                        const type = m.role === 'user' ? 'user' : m.role === 'assistant' ? 'kiara' : null;
+                        const type = m.role === 'user' ? 'user' : m.role === 'assistant' ? 'openclaw-web' : null;
                         if (!type) return;
                         addMessage(type, m.text, m.timestamp, m.raw || null);
                     });
@@ -1530,7 +1530,7 @@
                 // Render tabs
                 renderLogTabs();
 
-                // 2. Auto-select first file (kiara-web.log or gateway.log)
+                // 2. Auto-select first file (openclaw-web.log or gateway.log)
                 const preferred = logFiles.find(f => f.name === 'gateway.log') || logFiles[0];
                 if (preferred) {
                     await loadLogFile(preferred.name);
@@ -2039,7 +2039,7 @@
             
             // App's own session
             if (key === defaultSessionKey) {
-                return 'Kiara Web';
+                return 'OpenClaw Web Web';
             }
 
             // Main session
@@ -2086,7 +2086,7 @@
         function getChannelIcon(channel, key) {
             // Returns {icon, label} for emoji + tooltip
             if (key) {
-                if (key === defaultSessionKey) return {icon: '🦞', label: 'Kiara Web'};
+                if (key === defaultSessionKey) return {icon: '🦞', label: 'OpenClaw Web Web'};
                 if (key === 'agent:main:main' || key === 'agent:main') return {icon: '🏠', label: 'Main Session'};
                 if (key.includes(':cron:')) return {icon: '⏰', label: 'Cron Job'};
             }
@@ -2141,7 +2141,7 @@
             // Update input placeholder
             const input = document.getElementById('messageInput');
             if (sessionKey === defaultSessionKey) {
-                input.placeholder = 'Nachricht an Kiara...';
+                input.placeholder = 'Nachricht an OpenClaw Web...';
             } else {
                 input.placeholder = 'Nachricht an ' + deriveSessionName(sessData) + '...';
             }
@@ -2175,7 +2175,7 @@
                 chat.innerHTML = '';
                 if (data.messages && data.messages.length) {
                     data.messages.forEach(m => {
-                        const type = m.role === 'user' ? 'user' : m.role === 'assistant' ? 'kiara' : null;
+                        const type = m.role === 'user' ? 'user' : m.role === 'assistant' ? 'openclaw-web' : null;
                         if (!type) return;
                         addMessage(type, m.text, m.timestamp, m.raw || null);
                     });
