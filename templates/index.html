@@ -1034,9 +1034,11 @@
                 gp.textContent = me.connected ? '● Online' : '○ Offline';
                 gp.className = 'info-pill ' + (me.connected ? 'online' : 'offline');
 
-                // Models for picker (load once) — always update
-                if (me.models && me.models.length && !models.length) {
-                    models = me.models;
+                // Models for picker — keep in sync (server can refresh after GW connects)
+                if (me.models && me.models.length) {
+                    if (!models.length || me.models.length !== models.length) {
+                        models = me.models;
+                    }
                 }
 
                 // Skip model/token pill updates when viewing a foreign session

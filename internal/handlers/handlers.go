@@ -35,14 +35,17 @@ type ModelInfo struct {
 
 // AppState holds the application state
 type AppState struct {
-	config        *config.Config
-	gw            *gateway.Client
-	sessions      map[string]*Session
-	sessionMu     sync.RWMutex
+	config    *config.Config
+	gw        *gateway.Client
+	sessions  map[string]*Session
+	sessionMu sync.RWMutex
+
 	models        []ModelInfo
 	modelsMu      sync.RWMutex
 	modelsModTime time.Time
-	templates     *template.Template
+	modelsSource  string // "gateway" | "config"
+
+	templates *template.Template
 }
 
 // NewAppState creates a new app state
@@ -75,7 +78,50 @@ func (s *AppState) GetTemplates() *template.Template {
 
 // ===== Model Loading =====
 
-// LoadModels loads models from config file
+func loadModelsViaOpenClawCLI(configPath string) ([]ModelInfo, error) {
+	// `openclaw models list --json` returns { count, models: [{ key, name, ... }] }
+	cmd := exec.Command("openclaw", "models", "list", "--json")
+	// Ensure we use the same config file as the webapp.
+	cmd.Env = append(os.Environ(), "OPENCLAW_CONFIG_PATH="+configPath)
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, err
+	}
+
+	var resp struct {
+		Models []struct {
+			Key  string `json:"key"`
+			Name string `json:"name"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal(out, &resp); err != nil {
+		return nil, err
+	}
+
+	models := make([]ModelInfo, 0, len(resp.Models))
+	for _, m := range resp.Models {
+		key := strings.TrimSpace(m.Key)
+		if key == "" {
+			continue
+		}
+		provider := ""
+		id := key
+		if i := strings.Index(key, "/"); i >= 0 {
+			provider = key[:i]
+			id = key[i+1:]
+		}
+		models = append(models, ModelInfo{ID: id, Name: m.Name, Provider: provider})
+	}
+	return models, nil
+}
+
+
+// LoadModels loads models.
+//
+// Important: OpenClaw supports `models.mode = "merge"`, which means the *effective*
+// allowlist is the merge of built-in defaults + the config additions/overrides.
+// When in merge mode and the Gateway is connected, we prefer the Gateway’s
+// resolved catalog (`models.list`) so the UI shows *all* allowed models.
 func (s *AppState) LoadModels(configPath string) error {
 	info, err := os.Stat(configPath)
 	if err != nil {
@@ -85,8 +131,10 @@ func (s *AppState) LoadModels(configPath string) error {
 	if err != nil {
 		return err
 	}
+
 	var cfg struct {
 		Models struct {
+			Mode      string `json:"mode"`
 			Providers map[string]struct {
 				Models []ModelInfo `json:"models"`
 			} `json:"providers"`
@@ -95,6 +143,28 @@ func (s *AppState) LoadModels(configPath string) error {
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return err
 	}
+
+	// If we’re in merge mode, the config file alone is not the full picture.
+	// The most accurate "allowed" list is what `openclaw models list` prints
+	// (same as the TUI /models), because it resolves defaults+aliases+fallbacks.
+	if strings.EqualFold(strings.TrimSpace(cfg.Models.Mode), "merge") {
+		// Try CLI first (matches TUI), then fall back to config parsing.
+		if merged, err := loadModelsViaOpenClawCLI(configPath); err == nil {
+			s.modelsMu.Lock()
+			s.models = merged
+			s.modelsModTime = info.ModTime()
+			s.modelsSource = "openclaw-cli"
+			s.modelsMu.Unlock()
+			log.Printf("[models] loaded %d models via openclaw CLI (merge mode)", len(merged))
+			return nil
+		}
+
+		// Fallback: If CLI fails but Gateway is up, you *can* still fetch the gateway catalog,
+		// but it may include many non-allowed models. We intentionally do NOT use it here.
+		log.Printf("[models] openclaw CLI model listing failed (merge mode), falling back to config parsing")
+	}
+
+	// Config-only parsing (works for mode="replace" or when gateway isn’t available).
 	var models []ModelInfo
 	for provider, p := range cfg.Models.Providers {
 		for _, m := range p.Models {
@@ -102,9 +172,11 @@ func (s *AppState) LoadModels(configPath string) error {
 			models = append(models, m)
 		}
 	}
+
 	s.modelsMu.Lock()
 	s.models = models
 	s.modelsModTime = info.ModTime()
+	s.modelsSource = "config"
 	s.modelsMu.Unlock()
 	log.Printf("[models] loaded %d models from config", len(models))
 	return nil
@@ -117,12 +189,26 @@ func (s *AppState) RefreshModelsIfNeeded() {
 	if err != nil {
 		return
 	}
+
 	s.modelsMu.RLock()
 	lastMod := s.modelsModTime
+	src := s.modelsSource
 	s.modelsMu.RUnlock()
+
+	// Normal path: reload when config changes.
 	if info.ModTime().After(lastMod) {
 		if err := s.LoadModels(configPath); err != nil {
 			log.Printf("[models] refresh error: %v", err)
+		}
+		return
+	}
+
+	// Special case: in merge mode we may have started while the Gateway was still
+	// connecting, so the first load fell back to config-only. When the Gateway
+	// becomes available later, refresh once even without a config modtime change.
+	if src != "gateway" && s.gw != nil && s.gw.Connected.Load() {
+		if err := s.LoadModels(configPath); err != nil {
+			log.Printf("[models] refresh (gateway available) error: %v", err)
 		}
 	}
 }
