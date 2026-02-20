@@ -116,7 +116,9 @@ func (gc *Client) run() error {
 	// connect handshake
 	signedAt := time.Now().UnixMilli()
 	clientId := "gateway-client"
-	clientMode := "webchat"
+	// Use UI client mode (not webchat). Webchat clients are intentionally restricted
+	// from session-admin methods like sessions.delete.
+	clientMode := "ui"
 	scopes := []string{"operator.admin", "operator.write", "operator.read"}
 	payload := buildDeviceAuthPayload("v1", gc.deviceId, clientId, clientMode, "operator", scopes, signedAt, gc.token, "")
 	sig := ""
