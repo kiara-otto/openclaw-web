@@ -13,6 +13,7 @@ type SessionInfo struct {
 	OutputTokens  int64  `json:"outputTokens"`
 	TotalTokens   int64  `json:"totalTokens"`
 	ContextTokens int64  `json:"contextTokens"`
+	HasOverride   bool   `json:"-"`
 }
 
 // GetSessionInfo reads model and token info.
@@ -62,7 +63,7 @@ func (gc *Client) GetSessionInfo() SessionInfo {
 					info.TotalTokens = sess.TotalTokens
 					info.ContextTokens = sess.ContextTokens
 					if info.Model != "" {
-						return info
+						break
 					}
 					break
 				}
@@ -70,10 +71,16 @@ func (gc *Client) GetSessionInfo() SessionInfo {
 		}
 	}
 
-	// Fallback: read from local sessions.json file
-	info = gc.readSessionFromFile()
+	// Prefer local override if present (sessions.patch writes to sessions.json)
+	fileInfo := gc.readSessionFromFile()
+	if fileInfo.HasOverride && fileInfo.Model != "" {
+		info.Model = fileInfo.Model
+	}
 	if info.Model != "" {
 		return info
+	}
+	if fileInfo.Model != "" {
+		return fileInfo
 	}
 
 	// Third fallback: read default model from openclaw.json config
@@ -129,6 +136,7 @@ func (gc *Client) readSessionFromFile() SessionInfo {
 	}
 	if json.Unmarshal(data, &sessions) == nil {
 		if s, ok := sessions[gc.sessionKey]; ok {
+			info.HasOverride = s.ModelOverride != "" || s.ProviderOverride != ""
 			model := s.ModelOverride
 			provider := s.ProviderOverride
 			if model == "" {

@@ -478,6 +478,15 @@
             border-radius: 0 0 8px 4px;
         }
         .msg-time:hover { opacity: 0.7; }
+        .msg-aborted {
+            display: inline-block;
+            font-size: 9px;
+            color: #f90;
+            padding: 2px 6px;
+            margin-top: 4px;
+            border: 1px solid #f90;
+            border-radius: 4px;
+        }
 
         /* === DEBUG OVERLAY === */
         .debug-overlay {
@@ -598,7 +607,7 @@
             gap: 8px;
             flex-shrink: 0;
         }
-        .chat-input-bar input {
+        .chat-input-bar textarea {
             flex: 1;
             background: #111;
             border: 1px solid #0f0;
@@ -608,9 +617,13 @@
             font-size: 14px;
             border-radius: 8px;
             outline: none;
+            resize: none;
+            min-height: 42px;
+            max-height: 140px;
+            overflow-y: auto;
         }
-        .chat-input-bar input:focus { box-shadow: 0 0 6px rgba(0,255,0,0.3); }
-        .chat-input-bar input::placeholder { color: #555; }
+        .chat-input-bar textarea:focus { box-shadow: 0 0 6px rgba(0,255,0,0.3); }
+        .chat-input-bar textarea::placeholder { color: #555; }
         .chat-input-bar button {
             background: transparent;
             border: 1px solid #0f0;
@@ -632,6 +645,14 @@
             color: #555;
         }
         #refreshBtn:hover { border-color: #0f0; color: #0f0; background: transparent; }
+        .abort-btn {
+            border-color: #f33;
+            color: #f33;
+        }
+        .abort-btn:hover {
+            background: #f33;
+            color: #000;
+        }
         #refreshBtn.spinning { animation: spin 0.6s linear; pointer-events: none; }
 
         /* === LOG OVERLAY === */
@@ -815,6 +836,7 @@
                 <!-- typing indicator lives at the end -->
             </div>
             <div class="typing-indicator" id="typingIndicator">
+                <button type="button" id="abortBtn" class="abort-btn" onclick="abortChat()" style="display:none;" title="Abbrechen">⛔</button>
                 <div class="typing-dot"></div>
                 <div class="typing-dot"></div>
                 <div class="typing-dot"></div>
@@ -822,7 +844,7 @@
         </div>
         <form class="chat-input-bar" autocomplete="off" onsubmit="return false;" role="presentation">
             <button type="button" id="refreshBtn" onclick="refreshChat()" title="Chat neu laden">↻</button>
-            <input type="search" id="messageInput" name="q" placeholder="Nachricht an OpenClaw Web..." autocomplete="nope" role="presentation" onkeypress="if(event.key==='Enter'&&!sending)sendMessage()" autofocus>
+            <textarea id="messageInput" name="q" placeholder="Nachricht an OpenClaw Web..." autocomplete="nope" role="presentation" onkeydown="handleInputKeydown(event)" rows="1"></textarea>
             <button type="button" id="sendBtn" onclick="sendMessage()">➤</button>
         </form>
     </div>
@@ -971,6 +993,8 @@
 
     <script>
         let sending = false;
+        let processing = false;
+        let activeRunId = '';
         let models = [];
         let currentModel = '';
         let modelSetAt = 0; // timestamp of last manual model switch
@@ -979,8 +1003,12 @@
             await loadSessionKey();
             await refreshInfo();
             await loadHistory();
+            await refreshChatStatus();
             setInterval(refreshInfo, 8000);
-            document.getElementById('messageInput').focus();
+            const input = document.getElementById('messageInput');
+            input.addEventListener('input', () => autoResizeInput(input));
+            autoResizeInput(input);
+            input.focus();
         }
 
         async function loadSessionKey() {
@@ -1008,7 +1036,7 @@
                 const data = await r.json();
                 if (data.messages && data.messages.length) {
                     data.messages.forEach(m => {
-                        const type = m.role === 'user' ? 'user' : m.role === 'assistant' ? DISPLAY_NAME.toLowerCase() : null;
+                        const type = m.role === 'user' ? 'user' : m.role === 'assistant' ? 'openclaw-web' : null;
                         if (!type) return;
                         addMessage(type, m.text, m.timestamp, m.raw || null);
                     });
@@ -1024,7 +1052,11 @@
         async function refreshInfo() {
             const viewingForeign = activeSessionKey && activeSessionKey !== defaultSessionKey;
             try {
-                const r = await fetch('/api/me');
+                let meUrl = '/api/me';
+                if (activeSessionKey && activeSessionKey !== defaultSessionKey) {
+                    meUrl += '?sessionKey=' + encodeURIComponent(activeSessionKey);
+                }
+                const r = await fetch(meUrl);
                 if (r.status === 401) { location.href = '/'; return; }
                 const me = await r.json();
                 if (me.error === 'unauthorized') { location.href = '/'; return; }
@@ -1078,6 +1110,7 @@
                     ctxP.textContent = 'ctx: –';
                     ctxMobile.textContent = '';
                 }
+                await refreshChatStatus();
             } catch(e) {
                 document.getElementById('gwPill').textContent = '○ Error';
                 document.getElementById('gwPill').className = 'info-pill offline';
@@ -1147,6 +1180,9 @@
         async function activateModel(id, displayName) {
             const formData = new URLSearchParams();
             formData.set('model', id);
+            if (activeSessionKey && activeSessionKey !== defaultSessionKey) {
+                formData.set('sessionKey', activeSessionKey);
+            }
             try {
                 const resp = await fetch('/api/set-model', { method: 'POST', body: formData });
                 const data = await resp.json();
@@ -1162,7 +1198,7 @@
                 const shortName = displayName || currentModel.split('/').pop();
                 document.getElementById('modelPill').textContent = '🧠 ' + shortName;
                 document.getElementById('modelPill').title = currentModel;
-                log_info('[model] switched to ' + currentModel);
+                log_info('[model] switched to ' + currentModel + (data.resolvedModel ? ' (resolved: ' + data.resolvedModel + ')' : ''));
             } catch(e) {
                 console.error('Failed to set model:', e);
                 addMessage('error', 'Model switch failed: ' + e.message);
@@ -1195,9 +1231,84 @@
             scrollToBottom();
         }
 
+        function setProcessing(isProcessing, runId) {
+            processing = Boolean(isProcessing);
+            activeRunId = runId || '';
+            const abortBtn = document.getElementById('abortBtn');
+            if (processing) {
+                abortBtn.style.display = 'inline-block';
+                showTyping(true);
+            } else {
+                abortBtn.style.display = 'none';
+                showTyping(false);
+            }
+        }
+
+        async function refreshChatStatus() {
+            try {
+                let url = '/api/chat/status';
+                if (activeSessionKey && activeSessionKey !== defaultSessionKey) {
+                    url += '?sessionKey=' + encodeURIComponent(activeSessionKey);
+                }
+                const r = await fetch(url);
+                if (r.status === 401) return;
+                const data = await r.json();
+                setProcessing(!!data.processing, data.runId || '');
+            } catch(e) {
+                console.log('Failed to refresh chat status:', e);
+            }
+        }
+
+        async function abortChat() {
+            if (!processing) return;
+            const body = {};
+            if (activeSessionKey && activeSessionKey !== defaultSessionKey) {
+                body.sessionKey = activeSessionKey;
+            }
+            if (activeRunId) body.runId = activeRunId;
+            try {
+                await fetch('/api/chat/abort', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(body)
+                });
+            } catch(e) {
+                console.log('Abort failed:', e);
+            } finally {
+                setProcessing(false, '');
+            }
+        }
+
         function scrollToBottom() {
             const scroll = document.getElementById('chatScroll');
             scroll.scrollTop = scroll.scrollHeight;
+        }
+
+        function insertAtCaret(el, text) {
+            const start = el.selectionStart;
+            const end = el.selectionEnd;
+            const value = el.value;
+            el.value = value.slice(0, start) + text + value.slice(end);
+            const pos = start + text.length;
+            el.selectionStart = el.selectionEnd = pos;
+        }
+
+        function handleInputKeydown(e) {
+            if (e.key !== 'Enter') return;
+            if (e.altKey || e.shiftKey) {
+                e.preventDefault();
+                insertAtCaret(e.target, '\n');
+                autoResizeInput(e.target);
+                return;
+            }
+            e.preventDefault();
+            if (!sending) sendMessage();
+        }
+
+        function autoResizeInput(el) {
+            if (!el) return;
+            el.style.height = 'auto';
+            el.style.height = Math.min(el.scrollHeight, 140) + 'px';
         }
 
         async function sendMessage() {
@@ -1223,9 +1334,10 @@
             };
             addMessage('user', msg, sentAt, userDebug);
             input.value = '';
+            autoResizeInput(input);
             sending = true;
             document.getElementById('sendBtn').disabled = true;
-            showTyping(true);
+            setProcessing(true, '');
 
             try {
                 const resp = await fetch('/api/chat', {
@@ -1234,7 +1346,6 @@
                     body: JSON.stringify(requestBody)
                 });
                 const data = await resp.json();
-                showTyping(false);
                 if (data.error) {
                     addMessage('error', data.error);
                 } else if (data.text) {
@@ -1251,13 +1362,18 @@
                     // For foreign sessions, poll until the assistant reply shows up in that session.
                     if (activeSessionKey && activeSessionKey !== defaultSessionKey) {
                         pollForeignReply(activeSessionKey, sentAt, 120000);
+                    } else {
+                        setProcessing(false, '');
                     }
                 } else {
                     addMessage('openclaw-web', JSON.stringify(data));
+                    if (!activeSessionKey || activeSessionKey === defaultSessionKey) {
+                        setProcessing(false, '');
+                    }
                 }
                 refreshInfo();
             } catch(e) {
-                showTyping(false);
+                setProcessing(false, '');
                 addMessage('error', 'Network error: ' + e.message);
             } finally {
                 sending = false;
@@ -1292,7 +1408,7 @@
         async function pollForeignReply(sessionKey, sentAtMs, maxWaitMs) {
             const started = Date.now();
             let delay = 800;
-            showTyping(true);
+            setProcessing(true, '');
 
             while (Date.now() - started < (maxWaitMs || 120000)) {
                 const data = await refreshForeignHistory();
@@ -1304,7 +1420,14 @@
                         return !isNaN(ts) && ts >= (sentAtMs || 0);
                     });
                     if (hasReply) {
-                        showTyping(false);
+                        setProcessing(false, '');
+                        try {
+                            await fetch('/api/chat/clear', {
+                                method: 'POST',
+                                headers: {'Content-Type': 'application/json'},
+                                body: JSON.stringify({ sessionKey })
+                            });
+                        } catch(e) {}
                         return;
                     }
                 }
@@ -1314,7 +1437,7 @@
             }
 
             // Timed out: stop indicator but leave chat as-is
-            showTyping(false);
+            setProcessing(false, '');
         }
 
         function addMessage(type, text, timestamp, debugData) {
@@ -1329,6 +1452,14 @@
             bubble.className = 'msg ' + type;
             bubble.textContent = text;
             wrapper.appendChild(bubble);
+
+            // Aborted marker
+            if (debugData && debugData.aborted) {
+                const aborted = document.createElement('span');
+                aborted.className = 'msg-aborted';
+                aborted.textContent = '⚠️ Abgebrochen';
+                wrapper.appendChild(aborted);
+            }
 
             // Timestamp flag — attached to bubble
             if (ts) {
@@ -1503,7 +1634,11 @@
         async function sessionReset() {
             if (!confirm('Session wirklich zurücksetzen?')) return;
             toggleMenu();
-            await fetch('/api/session/reset', {method: 'POST'});
+            const formData = new URLSearchParams();
+            if (activeSessionKey && activeSessionKey !== defaultSessionKey) {
+                formData.set('sessionKey', activeSessionKey);
+            }
+            await fetch('/api/session/reset', {method: 'POST', body: formData});
             document.getElementById('chat').innerHTML = '';
         }
 
@@ -1978,8 +2113,14 @@
             meta.className = 'session-meta';
             
             const parts = [];
-            if (sess.model) {
-                parts.push('<span class="session-model">🧠 ' + escHtml(sess.model) + '</span>');
+            let displayModel = sess.model || '';
+            if (sess.modelOverride || sess.providerOverride) {
+                const p = sess.providerOverride || sess.modelProvider || '';
+                const m = sess.modelOverride || sess.model || '';
+                displayModel = p ? (p + '/' + m) : m;
+            }
+            if (displayModel) {
+                parts.push('<span class="session-model">🧠 ' + escHtml(displayModel) + '</span>');
             }
             if (sess.totalTokens && sess.contextTokens) {
                 const used = Math.round(sess.totalTokens / 1000);
@@ -2128,7 +2269,7 @@
             // Show loading
             const chat = document.getElementById('chat');
             chat.innerHTML = '<div class="sessions-loading"><div class="log-spinner"></div>📡 Lade Session...<br>🧠 Model: ' + escHtml(sessData.model || '?') + '<br>📜 Lade Chat-Verlauf...</div>';
-            showTyping(false);
+            setProcessing(false, '');
 
             // Update banner
             if (sessionKey === defaultSessionKey) {
@@ -2153,6 +2294,8 @@
                 mp.textContent = '🧠 ' + shortModel;
                 mp.title = sessData.model;
             }
+
+            autoResizeInput(input);
 
             // Update context pill
             if (sessData.totalTokens && sessData.contextTokens) {
@@ -2185,6 +2328,7 @@
                 chat.innerHTML = '';
                 addMessage('error', 'Fehler beim Laden: ' + e.message);
             }
+            await refreshChatStatus();
         }
 
         async function returnToMain() {

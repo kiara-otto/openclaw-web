@@ -33,6 +33,11 @@ type ModelInfo struct {
 	Provider string `json:"provider"`
 }
 
+type activeRun struct {
+	RunId     string
+	StartedAt time.Time
+}
+
 // AppState holds the application state
 type AppState struct {
 	config    *config.Config
@@ -45,17 +50,135 @@ type AppState struct {
 	modelsModTime time.Time
 	modelsSource  string // "gateway" | "config"
 
+	modelDisplay   map[string]string
+	modelDisplayMu sync.RWMutex
+
+	activeRuns   map[string]activeRun
+	activeRunsMu sync.RWMutex
+	abortedRuns  map[string]time.Time
+	abortedMu    sync.RWMutex
+
 	templates *template.Template
 }
 
 // NewAppState creates a new app state
 func NewAppState(cfg *config.Config, gw *gateway.Client) *AppState {
 	return &AppState{
-		config:    cfg,
-		gw:        gw,
-		sessions:  make(map[string]*Session),
-		templates: template.New("templates"),
+		config:       cfg,
+		gw:           gw,
+		sessions:     make(map[string]*Session),
+		modelDisplay: make(map[string]string),
+		activeRuns:   make(map[string]activeRun),
+		abortedRuns:  make(map[string]time.Time),
+		templates:    template.New("templates"),
 	}
+}
+
+func (s *AppState) getPrimaryModel() string {
+	cfgPath := s.config.OpenClawConfig
+	if cfgPath == "" {
+		cfgPath = filepath.Join(os.Getenv("HOME"), ".openclaw", "openclaw.json")
+	}
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		return ""
+	}
+	var oc struct {
+		Agents struct {
+			Defaults struct {
+				Model json.RawMessage `json:"model"`
+			} `json:"defaults"`
+		} `json:"agents"`
+	}
+	if json.Unmarshal(data, &oc) != nil || oc.Agents.Defaults.Model == nil {
+		return ""
+	}
+	var modelStr string
+	if json.Unmarshal(oc.Agents.Defaults.Model, &modelStr) == nil && modelStr != "" {
+		return modelStr
+	}
+	var modelObj struct {
+		Primary string `json:"primary"`
+	}
+	if json.Unmarshal(oc.Agents.Defaults.Model, &modelObj) == nil {
+		return strings.TrimSpace(modelObj.Primary)
+	}
+	return ""
+}
+
+func (s *AppState) setDisplayModel(sessionKey, model string) {
+	s.modelDisplayMu.Lock()
+	defer s.modelDisplayMu.Unlock()
+	if model == "" {
+		delete(s.modelDisplay, sessionKey)
+		return
+	}
+	s.modelDisplay[sessionKey] = model
+}
+
+func (s *AppState) getDisplayModel(sessionKey string) string {
+	s.modelDisplayMu.RLock()
+	defer s.modelDisplayMu.RUnlock()
+	return s.modelDisplay[sessionKey]
+}
+
+func (s *AppState) setActiveRun(sessionKey, runId string) {
+	if sessionKey == "" || runId == "" {
+		return
+	}
+	s.activeRunsMu.Lock()
+	s.activeRuns[sessionKey] = activeRun{RunId: runId, StartedAt: time.Now()}
+	s.activeRunsMu.Unlock()
+}
+
+func (s *AppState) clearActiveRun(sessionKey string) {
+	s.activeRunsMu.Lock()
+	delete(s.activeRuns, sessionKey)
+	s.activeRunsMu.Unlock()
+}
+
+func (s *AppState) getActiveRun(sessionKey string) (activeRun, bool) {
+	s.activeRunsMu.RLock()
+	entry, ok := s.activeRuns[sessionKey]
+	s.activeRunsMu.RUnlock()
+	if !ok {
+		return activeRun{}, false
+	}
+	// Drop stale entries (e.g., after refresh) after 10 minutes
+	if time.Since(entry.StartedAt) > 10*time.Minute {
+		s.clearActiveRun(sessionKey)
+		return activeRun{}, false
+	}
+	return entry, true
+}
+
+func (s *AppState) setAbort(sessionKey string) {
+	if sessionKey == "" {
+		return
+	}
+	s.abortedMu.Lock()
+	s.abortedRuns[sessionKey] = time.Now()
+	s.abortedMu.Unlock()
+}
+
+func (s *AppState) clearAbort(sessionKey string) {
+	s.abortedMu.Lock()
+	delete(s.abortedRuns, sessionKey)
+	s.abortedMu.Unlock()
+}
+
+func (s *AppState) getAbort(sessionKey string) (time.Time, bool) {
+	s.abortedMu.RLock()
+	at, ok := s.abortedRuns[sessionKey]
+	s.abortedMu.RUnlock()
+	if !ok {
+		return time.Time{}, false
+	}
+	if time.Since(at) > 30*time.Minute {
+		s.clearAbort(sessionKey)
+		return time.Time{}, false
+	}
+	return at, true
 }
 
 // LoadTemplates loads HTML templates
@@ -114,7 +237,6 @@ func loadModelsViaOpenClawCLI(configPath string) ([]ModelInfo, error) {
 	}
 	return models, nil
 }
-
 
 // LoadModels loads models.
 //
@@ -247,6 +369,16 @@ func (s *AppState) HandleMe(w http.ResponseWriter, r *http.Request) {
 	models := s.models
 	s.modelsMu.RUnlock()
 	info := s.gw.GetSessionInfo()
+
+	sessionKey := strings.TrimSpace(r.URL.Query().Get("sessionKey"))
+	if sessionKey == "" {
+		sessionKey = s.config.SessionKey
+	}
+	// Prefer last requested display model for this session (UI selection)
+	if disp := s.getDisplayModel(sessionKey); disp != "" {
+		info.Model = disp
+	}
+
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"username":      username,
 		"currentModel":  info.Model,
@@ -278,6 +410,11 @@ func (s *AppState) HandleSetModel(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Model ID required", http.StatusBadRequest)
 		return
 	}
+	sessionKey := strings.TrimSpace(r.FormValue("sessionKey"))
+	if sessionKey == "" {
+		sessionKey = s.config.SessionKey
+	}
+	requested := modelID
 	if !s.gw.Connected.Load() {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		json.NewEncoder(w).Encode(map[string]string{"error": "Gateway not connected"})
@@ -285,7 +422,7 @@ func (s *AppState) HandleSetModel(w http.ResponseWriter, r *http.Request) {
 	}
 
 	raw, err := s.gw.Call("sessions.patch", map[string]interface{}{
-		"key":   s.config.SessionKey,
+		"key":   sessionKey,
 		"model": modelID,
 	})
 	if err != nil {
@@ -295,9 +432,10 @@ func (s *AppState) HandleSetModel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("[set-model] model set to %s (response: %s)", modelID, truncate(string(raw), 200))
+	log.Printf("[set-model] model set to %s (session=%s) (response: %s)", modelID, sessionKey, truncate(string(raw), 200))
+	s.setDisplayModel(sessionKey, requested)
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok", "model": modelID})
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok", "model": requested, "resolvedModel": modelID, "sessionKey": sessionKey})
 }
 
 // HandleChat handles chat messages
@@ -317,6 +455,12 @@ func (s *AppState) HandleChat(w http.ResponseWriter, r *http.Request) {
 	if !s.gw.Connected.Load() {
 		json.NewEncoder(w).Encode(map[string]string{"error": "Gateway not connected"})
 		return
+	}
+
+	if req.SessionKey != "" {
+		s.clearAbort(req.SessionKey)
+	} else {
+		s.clearAbort(s.config.SessionKey)
 	}
 
 	sentAt := time.Now().UnixMilli()
@@ -339,6 +483,7 @@ func (s *AppState) HandleChat(w http.ResponseWriter, r *http.Request) {
 				RunId string `json:"runId"`
 			}
 			if json.Unmarshal(raw, &sendResp) == nil && sendResp.RunId != "" {
+				s.setActiveRun(req.SessionKey, sendResp.RunId)
 				resp = "[sent to " + req.SessionKey + "]"
 			} else {
 				resp = "[sent]"
@@ -355,10 +500,72 @@ func (s *AppState) HandleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"text":        resp,
-		"sentAt":      sentAt,
-		"receivedAt":  receivedAt,
+		"text":       resp,
+		"sentAt":     sentAt,
+		"receivedAt": receivedAt,
 	})
+}
+
+// HandleChatStatus reports whether a session currently has an active run
+func (s *AppState) HandleChatStatus(w http.ResponseWriter, r *http.Request) {
+	sessionKey := r.URL.Query().Get("sessionKey")
+	if sessionKey == "" {
+		sessionKey = s.config.SessionKey
+	}
+	entry, ok := s.getActiveRun(sessionKey)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"processing": ok,
+		"runId":      entry.RunId,
+		"sessionKey": sessionKey,
+	})
+}
+
+// HandleChatAbort aborts the active run for a session
+func (s *AppState) HandleChatAbort(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		SessionKey string `json:"sessionKey"`
+		RunId      string `json:"runId"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	if req.SessionKey == "" {
+		req.SessionKey = s.config.SessionKey
+	}
+	if s.gw.Connected.Load() {
+		payload := map[string]interface{}{"sessionKey": req.SessionKey}
+		if req.RunId != "" {
+			payload["runId"] = req.RunId
+		}
+		if _, err := s.gw.Call("chat.abort", payload); err != nil {
+			log.Printf("[chat-abort] error: %v", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+	}
+	s.setAbort(req.SessionKey)
+	s.clearActiveRun(req.SessionKey)
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+// HandleChatClear clears local run state (used after foreign session reply arrives)
+func (s *AppState) HandleChatClear(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		SessionKey string `json:"sessionKey"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	if req.SessionKey == "" {
+		req.SessionKey = s.config.SessionKey
+	}
+	s.clearActiveRun(req.SessionKey)
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }
 
 // sendChat sends a message and waits for response (simplified version)
@@ -383,12 +590,15 @@ func (s *AppState) sendChat(message string) (string, error) {
 	}
 	if json.Unmarshal(resp, &sendResp) == nil && sendResp.RunId != "" {
 		s.gw.SetChatRunId(sendResp.RunId)
+		s.setActiveRun(s.config.SessionKey, sendResp.RunId)
 	}
 
 	if !s.gw.WaitForChatDone(120 * time.Second) {
+		s.clearActiveRun(s.config.SessionKey)
 		return "", &gateway.Error{Message: "chat timeout"}
 	}
 
+	s.clearActiveRun(s.config.SessionKey)
 	return s.gw.GetChatText(), nil
 }
 
@@ -435,6 +645,7 @@ func (s *AppState) HandleHistory(w http.ResponseWriter, r *http.Request) {
 		Text      string          `json:"text"`
 		Timestamp interface{}     `json:"timestamp,omitempty"`
 		Raw       json.RawMessage `json:"raw,omitempty"`
+		Aborted   bool            `json:"aborted,omitempty"`
 	}
 	var out []outMsg
 	for _, m := range hist.Messages {
@@ -453,6 +664,28 @@ func (s *AppState) HandleHistory(w http.ResponseWriter, r *http.Request) {
 			Raw:       rawDebug,
 		})
 	}
+
+	// Mark last assistant message as aborted if a recent abort happened
+	if abortAt, ok := s.getAbort(sessionKey); ok && len(out) > 0 {
+		idx := -1
+		for i := len(out) - 1; i >= 0; i-- {
+			if out[i].Role != "assistant" {
+				continue
+			}
+			// If we have a timestamp, ensure it's after the abort time
+			if ts, ok := parseTimestamp(out[i].Timestamp); ok {
+				if ts.Before(abortAt) {
+					continue
+				}
+			}
+			idx = i
+			break
+		}
+		if idx >= 0 {
+			out[idx].Aborted = true
+		}
+	}
+
 	json.NewEncoder(w).Encode(map[string]interface{}{"messages": out})
 }
 
@@ -476,6 +709,34 @@ func (s *AppState) extractContent(raw json.RawMessage) string {
 		return s.stripUserTimestampPrefix(s.stripOpenClawMeta(s.stripModelTags(strings.Join(parts, ""))))
 	}
 	return s.stripUserTimestampPrefix(s.stripOpenClawMeta(s.stripModelTags(string(raw))))
+}
+
+func parseTimestamp(raw interface{}) (time.Time, bool) {
+	switch v := raw.(type) {
+	case float64:
+		return time.UnixMilli(int64(v)), true
+	case int64:
+		return time.UnixMilli(v), true
+	case int:
+		return time.UnixMilli(int64(v)), true
+	case string:
+		if v == "" {
+			return time.Time{}, false
+		}
+		if ts, err := time.Parse(time.RFC3339, v); err == nil {
+			return ts, true
+		}
+		if ms, err := time.Parse(time.RFC3339Nano, v); err == nil {
+			return ms, true
+		}
+		if t, err := time.Parse("2006-01-02 15:04:05", v); err == nil {
+			return t, true
+		}
+		if t, err := time.Parse("2006-01-02 15:04:05.000", v); err == nil {
+			return t, true
+		}
+	}
+	return time.Time{}, false
 }
 
 func (s *AppState) stripModelTags(str string) string {
@@ -548,7 +809,9 @@ func (s *AppState) HandleMessageLog(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]string{"error": "sessions file not readable"})
 		return
 	}
-	var sessions map[string]struct{ SessionFile string `json:"sessionFile"` }
+	var sessions map[string]struct {
+		SessionFile string `json:"sessionFile"`
+	}
 	if err := json.Unmarshal(sdata, &sessions); err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(map[string]string{"error": "sessions.json parse error"})
@@ -603,7 +866,7 @@ func (s *AppState) HandleChangePassword(w http.ResponseWriter, r *http.Request) 
 
 	newHash := auth.HashPassword(req.New)
 	s.config.UpdatePassword(newHash)
-	
+
 	if err := s.config.Save("config.json"); err != nil {
 		log.Printf("[pw] failed to write config: %v", err)
 		json.NewEncoder(w).Encode(map[string]string{"error": "saved in memory but failed to write config file"})
@@ -638,8 +901,12 @@ func (s *AppState) HandleSessionReset(w http.ResponseWriter, r *http.Request) {
 	if s.gw.Connected.Load() {
 		// sessions.delete requires operator.admin in newer OpenClaw versions.
 		// sessions.reset achieves the same UX (fresh session) with lower privileges.
+		sessionKey := strings.TrimSpace(r.FormValue("sessionKey"))
+		if sessionKey == "" {
+			sessionKey = s.config.SessionKey
+		}
 		_, err := s.gw.Call("sessions.reset", map[string]interface{}{
-			"key":    s.config.SessionKey,
+			"key":    sessionKey,
 			"reason": "reset",
 		})
 		if err != nil {
@@ -648,7 +915,17 @@ func (s *AppState) HandleSessionReset(w http.ResponseWriter, r *http.Request) {
 			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 			return
 		}
-		log.Printf("[session-reset] session %s reset", s.config.SessionKey)
+		// After reset, explicitly set primary model (avoids MiniMax fallback)
+		if primary := s.getPrimaryModel(); primary != "" {
+			if _, err := s.gw.Call("sessions.patch", map[string]interface{}{
+				"key":   sessionKey,
+				"model": primary,
+			}); err != nil {
+				log.Printf("[session-reset] model set error (%s): %v", primary, err)
+			}
+			s.setDisplayModel(sessionKey, primary)
+		}
+		log.Printf("[session-reset] session %s reset", sessionKey)
 	}
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }
@@ -673,6 +950,54 @@ func (s *AppState) HandleSessions(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[sessions] error: %v", err)
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	// Merge in local overrides from sessions.json for immediate model display updates
+	var sessions []map[string]interface{}
+	var wrapper map[string]interface{}
+	if err := json.Unmarshal(raw, &wrapper); err == nil {
+		if v, ok := wrapper["sessions"]; ok {
+			if b, err := json.Marshal(v); err == nil {
+				_ = json.Unmarshal(b, &sessions)
+			}
+		}
+	}
+	if sessions == nil {
+		_ = json.Unmarshal(raw, &sessions)
+	}
+
+	if sessions != nil {
+		// Read local session overrides
+		path := filepath.Join(os.Getenv("HOME"), ".openclaw", "agents", "main", "sessions", "sessions.json")
+		if b, err := os.ReadFile(path); err == nil {
+			var local map[string]struct {
+				ModelOverride    string `json:"modelOverride"`
+				ProviderOverride string `json:"providerOverride"`
+			}
+			if json.Unmarshal(b, &local) == nil {
+				for _, sess := range sessions {
+					key, _ := sess["key"].(string)
+					if key == "" {
+						continue
+					}
+					if entry, ok := local[key]; ok {
+						if entry.ModelOverride != "" {
+							sess["modelOverride"] = entry.ModelOverride
+						}
+						if entry.ProviderOverride != "" {
+							sess["providerOverride"] = entry.ProviderOverride
+						}
+					}
+				}
+			}
+		}
+		if wrapper != nil && wrapper["sessions"] != nil {
+			wrapper["sessions"] = sessions
+			json.NewEncoder(w).Encode(wrapper)
+			return
+		}
+		json.NewEncoder(w).Encode(sessions)
 		return
 	}
 
@@ -1061,13 +1386,13 @@ func (s *AppState) HandleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	username := r.FormValue("username")
 	password := r.FormValue("password")
-	
+
 	// Check credentials
 	if username != s.config.Username || !auth.VerifyPassword(password, s.config.PasswordHash) {
 		s.templates.ExecuteTemplate(w, "login.html", map[string]string{"DisplayName": s.config.GetDisplayName(), "Error": "Invalid credentials"})
 		return
 	}
-	
+
 	sessionID := auth.RandomID()
 	s.sessionMu.Lock()
 	s.sessions[sessionID] = &Session{ID: sessionID, Username: username, ExpiresAt: time.Now().Add(24 * time.Hour)}
