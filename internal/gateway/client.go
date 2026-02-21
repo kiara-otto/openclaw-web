@@ -33,12 +33,16 @@ type Client struct {
 
 	Connected atomic.Bool
 
+	// Optional callbacks (used by web UI for SSE)
+	onGatewayConnected func(connected bool)
+	onChatFinal        func(sessionKey, runId, text string)
+
 	// chat streaming state
-	chatMu      sync.Mutex
-	chatRunId   string // runId we're waiting for
-	chatFinal   string
-	chatStream  string
-	chatDone    chan struct{}
+	chatMu     sync.Mutex
+	chatRunId  string // runId we're waiting for
+	chatFinal  string
+	chatStream string
+	chatDone   chan struct{}
 }
 
 // NewClient creates a new Gateway client
@@ -58,6 +62,20 @@ func NewClient(url, token, sessionKey, deviceId, devicePubKey, devicePrivKeyB64U
 // Start initiates the connection loop
 func (gc *Client) Start() { go gc.loop() }
 
+// SetOnGatewayConnected sets a callback invoked on connect/disconnect.
+func (gc *Client) SetOnGatewayConnected(fn func(connected bool)) {
+	gc.mu.Lock()
+	gc.onGatewayConnected = fn
+	gc.mu.Unlock()
+}
+
+// SetOnChatFinal sets a callback invoked when we receive a final assistant message for the primary session.
+func (gc *Client) SetOnChatFinal(fn func(sessionKey, runId, text string)) {
+	gc.mu.Lock()
+	gc.onChatFinal = fn
+	gc.mu.Unlock()
+}
+
 func (gc *Client) loop() {
 	backoff := 800 * time.Millisecond
 	for {
@@ -65,6 +83,12 @@ func (gc *Client) loop() {
 			log.Printf("[gw] error: %v — reconnect in %v", err, backoff)
 		}
 		gc.Connected.Store(false)
+		gc.mu.Lock()
+		cb := gc.onGatewayConnected
+		gc.mu.Unlock()
+		if cb != nil {
+			cb(false)
+		}
 		time.Sleep(backoff)
 		if backoff < 15*time.Second {
 			backoff = time.Duration(float64(backoff) * 1.7)
@@ -132,9 +156,9 @@ func (gc *Client) run() error {
 		"client": map[string]string{"id": clientId, "version": "1.0.0", "platform": "go", "mode": clientMode},
 		"device": map[string]interface{}{
 			"id":        gc.deviceId,
-			"publicKey":  gc.devicePub,
-			"signature":  sig,
-			"signedAt":   signedAt,
+			"publicKey": gc.devicePub,
+			"signature": sig,
+			"signedAt":  signedAt,
 		},
 		"role": "operator", "scopes": scopes,
 		"auth": map[string]string{"token": gc.token},
@@ -144,6 +168,12 @@ func (gc *Client) run() error {
 		return err
 	}
 	gc.Connected.Store(true)
+	gc.mu.Lock()
+	cb := gc.onGatewayConnected
+	gc.mu.Unlock()
+	if cb != nil {
+		cb(true)
+	}
 	log.Printf("[gw] connected")
 
 	return <-readErr
@@ -230,6 +260,13 @@ func (gc *Client) onChat(raw json.RawMessage) {
 		gc.chatFinal = text
 		gc.chatStream = ""
 		log.Printf("[gw] chat final text: %s", truncate(text, 200))
+		// Notify UI subscribers (SSE)
+		gc.mu.Lock()
+		onFinal := gc.onChatFinal
+		gc.mu.Unlock()
+		if onFinal != nil {
+			onFinal(ev.SessionKey, ev.RunId, text)
+		}
 		if gc.chatDone != nil {
 			close(gc.chatDone)
 			gc.chatDone = nil
@@ -275,7 +312,9 @@ func truncate(s string, n int) string {
 }
 
 func extractText(raw json.RawMessage) string {
-	var ev struct{ Message json.RawMessage `json:"message"` }
+	var ev struct {
+		Message json.RawMessage `json:"message"`
+	}
 	if json.Unmarshal(raw, &ev) != nil || ev.Message == nil {
 		return ""
 	}

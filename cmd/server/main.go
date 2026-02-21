@@ -54,6 +54,7 @@ func main() {
 	mux.HandleFunc("/api/set-model", state.HandleSetModel)
 	mux.HandleFunc("/api/chat", state.HandleChat)
 	mux.HandleFunc("/api/chat/status", state.HandleChatStatus)
+	mux.HandleFunc("/api/events", state.HandleEvents)
 	mux.HandleFunc("/api/chat/abort", state.HandleChatAbort)
 	mux.HandleFunc("/api/chat/clear", state.HandleChatClear)
 	mux.HandleFunc("/api/gateway/restart", state.HandleGatewayRestart)

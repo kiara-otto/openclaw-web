@@ -999,12 +999,47 @@
         let currentModel = '';
         let modelSetAt = 0; // timestamp of last manual model switch
 
+        // Auto-scroll handling:
+        // - Keep the view pinned to bottom while the user is at/near the bottom.
+        // - If the user scrolls up or is currently dragging/holding the scrollbar,
+        //   do NOT snap back to the bottom on background refreshes/status updates.
+        let autoScrollEnabled = true;
+        let chatPointerDown = false;
+
         async function init() {
             await loadSessionKey();
             await refreshInfo();
             await loadHistory();
             await refreshChatStatus();
-            setInterval(refreshInfo, 8000);
+            startEventStream();
+
+            // Track user scroll intent to avoid "snap to bottom" while reading history
+            const chatScroll = document.getElementById('chatScroll');
+            if (chatScroll) {
+                const isNearBottom = (thresholdPx = 80) => {
+                    const dist = chatScroll.scrollHeight - (chatScroll.scrollTop + chatScroll.clientHeight);
+                    return dist <= thresholdPx;
+                };
+
+                // Update auto-scroll state when the user scrolls (but not while actively dragging)
+                chatScroll.addEventListener('scroll', () => {
+                    if (!chatPointerDown) autoScrollEnabled = isNearBottom();
+                }, { passive: true });
+
+                chatScroll.addEventListener('pointerdown', () => {
+                    chatPointerDown = true;
+                });
+
+                // Pointerup can happen outside the scroll element
+                window.addEventListener('pointerup', () => {
+                    chatPointerDown = false;
+                    autoScrollEnabled = isNearBottom();
+                });
+
+                // Initialize
+                autoScrollEnabled = isNearBottom();
+            }
+
             const input = document.getElementById('messageInput');
             input.addEventListener('input', () => autoResizeInput(input));
             autoResizeInput(input);
@@ -1040,7 +1075,7 @@
                         if (!type) return;
                         addMessage(type, m.text, m.timestamp, m.raw || null);
                     });
-                    scrollToBottom();
+                    scrollToBottom(true);
                 }
             } catch(e) {
                 console.log('History load failed:', e);
@@ -1219,6 +1254,61 @@
             btn.classList.remove('spinning');
         }
 
+        // === LIVE UPDATES (SSE) ===
+
+        let eventSource = null;
+        let lastSSEAssistantText = '';
+
+        function startEventStream() {
+            try {
+                if (eventSource) eventSource.close();
+            } catch(e) {}
+
+            let url = '/api/events';
+            const sk = activeSessionKey || defaultSessionKey;
+            if (sk) url += '?sessionKey=' + encodeURIComponent(sk);
+
+            eventSource = new EventSource(url);
+
+            eventSource.addEventListener('gateway', (e) => {
+                try {
+                    const data = JSON.parse(e.data);
+                    const gp = document.getElementById('gwPill');
+                    gp.textContent = data.connected ? '● Online' : '○ Offline';
+                    gp.className = 'info-pill ' + (data.connected ? 'online' : 'offline');
+                } catch(err) {}
+            });
+
+            eventSource.addEventListener('status', (e) => {
+                try {
+                    const data = JSON.parse(e.data);
+                    if (data.sessionKey && activeSessionKey && data.sessionKey !== activeSessionKey) return;
+                    setProcessing(!!data.processing, data.runId || '');
+                } catch(err) {}
+            });
+
+            eventSource.addEventListener('message', (e) => {
+                try {
+                    const data = JSON.parse(e.data);
+                    if (data.sessionKey && activeSessionKey && data.sessionKey !== activeSessionKey) return;
+                    if (!data.text) return;
+
+                    // crude de-dupe: ignore if we just rendered the same assistant text
+                    if (data.text === lastSSEAssistantText) return;
+                    lastSSEAssistantText = data.text;
+
+                    addMessage('openclaw-web', data.text, data.timestamp || Date.now(), data);
+                    setProcessing(false, '');
+                    // Update pills/tokens lazily on real new output
+                    refreshInfo();
+                } catch(err) {}
+            });
+
+            eventSource.onerror = () => {
+                // EventSource auto-reconnects; keep quiet.
+            };
+        }
+
         // === CHAT ===
 
         function showTyping(show) {
@@ -1279,8 +1369,16 @@
             }
         }
 
-        function scrollToBottom() {
+        function scrollToBottom(force) {
             const scroll = document.getElementById('chatScroll');
+            if (!scroll) return;
+
+            const doForce = !!force;
+            if (!doForce) {
+                // Only auto-scroll if the user hasn't scrolled away from the bottom
+                // and isn't currently dragging/holding the scrollbar.
+                if (!autoScrollEnabled || chatPointerDown) return;
+            }
             scroll.scrollTop = scroll.scrollHeight;
         }
 
@@ -1473,7 +1571,9 @@
             }
 
             chat.appendChild(wrapper);
-            scrollToBottom();
+            // Always keep the user's own messages in view; otherwise only stick to bottom
+            // when the user is already at/near the bottom and not interacting.
+            scrollToBottom(type === 'user' || type === 'error');
         }
 
         function formatTimestamp(ts) {
@@ -2265,6 +2365,7 @@
             }
 
             activeSessionKey = sessionKey;
+            startEventStream();
             
             // Show loading
             const chat = document.getElementById('chat');

@@ -59,11 +59,13 @@ type AppState struct {
 	abortedMu    sync.RWMutex
 
 	templates *template.Template
+
+	hub *EventHub
 }
 
 // NewAppState creates a new app state
 func NewAppState(cfg *config.Config, gw *gateway.Client) *AppState {
-	return &AppState{
+	s := &AppState{
 		config:       cfg,
 		gw:           gw,
 		sessions:     make(map[string]*Session),
@@ -71,7 +73,28 @@ func NewAppState(cfg *config.Config, gw *gateway.Client) *AppState {
 		activeRuns:   make(map[string]activeRun),
 		abortedRuns:  make(map[string]time.Time),
 		templates:    template.New("templates"),
+		hub:          NewEventHub(),
 	}
+
+	// Wire Gateway events → SSE
+	if gw != nil {
+		gw.SetOnGatewayConnected(func(connected bool) {
+			s.hub.Broadcast("gateway", map[string]any{"connected": connected})
+		})
+		gw.SetOnChatFinal(func(sessionKey, runId, text string) {
+			// Broadcast assistant message + status update
+			s.hub.Broadcast("message", map[string]any{
+				"sessionKey": sessionKey,
+				"runId":      runId,
+				"role":       "assistant",
+				"text":       text,
+				"timestamp":  time.Now().UnixMilli(),
+			})
+			s.hub.Broadcast("status", map[string]any{"sessionKey": sessionKey, "processing": false, "runId": runId})
+		})
+	}
+
+	return s
 }
 
 func (s *AppState) getPrimaryModel() string {
@@ -129,12 +152,20 @@ func (s *AppState) setActiveRun(sessionKey, runId string) {
 	s.activeRunsMu.Lock()
 	s.activeRuns[sessionKey] = activeRun{RunId: runId, StartedAt: time.Now()}
 	s.activeRunsMu.Unlock()
+
+	if s.hub != nil {
+		s.hub.Broadcast("status", map[string]any{"sessionKey": sessionKey, "processing": true, "runId": runId})
+	}
 }
 
 func (s *AppState) clearActiveRun(sessionKey string) {
 	s.activeRunsMu.Lock()
 	delete(s.activeRuns, sessionKey)
 	s.activeRunsMu.Unlock()
+
+	if s.hub != nil {
+		s.hub.Broadcast("status", map[string]any{"sessionKey": sessionKey, "processing": false, "runId": ""})
+	}
 }
 
 func (s *AppState) getActiveRun(sessionKey string) (activeRun, bool) {
