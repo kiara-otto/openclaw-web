@@ -1455,7 +1455,15 @@
                         durationMs: (data.receivedAt||0) - (data.sentAt||0),
                         httpResponse: data
                     };
-                    addMessage('openclaw-web', data.text, data.receivedAt || Date.now(), respDebug);
+
+                    // If SSE is connected, the server will also push the assistant message.
+                    // Avoid rendering it twice: rely on SSE and only de-dupe here.
+                    const sseConnected = (eventSource && eventSource.readyState === 1);
+                    if (sseConnected) {
+                        lastSSEAssistantText = data.text;
+                    } else {
+                        addMessage('openclaw-web', data.text, data.receivedAt || Date.now(), respDebug);
+                    }
                     
                     // For foreign sessions, poll until the assistant reply shows up in that session.
                     if (activeSessionKey && activeSessionKey !== defaultSessionKey) {
