@@ -645,13 +645,23 @@
             color: #555;
         }
         #refreshBtn:hover { border-color: #0f0; color: #0f0; background: transparent; }
+        /* Abort button — keep it "Matrix" (outline) and consistent with the UI */
         .abort-btn {
-            border-color: #f33;
-            color: #f33;
+            border-color: #0f0;
+            color: #0f0;
+            background: transparent;
+            padding: 6px 10px;
+            font-size: 11px;
+            border-radius: 8px;
+            margin-left: 10px;
+            letter-spacing: 0.5px;
+            text-transform: uppercase;
+            opacity: 0.85;
         }
         .abort-btn:hover {
-            background: #f33;
+            background: #0f0;
             color: #000;
+            opacity: 1;
         }
         #refreshBtn.spinning { animation: spin 0.6s linear; pointer-events: none; }
 
@@ -836,10 +846,10 @@
                 <!-- typing indicator lives at the end -->
             </div>
             <div class="typing-indicator" id="typingIndicator">
-                <button type="button" id="abortBtn" class="abort-btn" onclick="abortChat()" style="display:none;" title="Abbrechen">⛔</button>
                 <div class="typing-dot"></div>
                 <div class="typing-dot"></div>
                 <div class="typing-dot"></div>
+                <button type="button" id="abortBtn" class="abort-btn" onclick="abortChat()" style="display:none;" title="Abbrechen">Stop</button>
             </div>
         </div>
         <form class="chat-input-bar" autocomplete="off" onsubmit="return false;" role="presentation">
