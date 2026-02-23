@@ -905,7 +905,7 @@
                 <h2>🧠 Model auswählen</h2>
                 <button class="menu-close" onclick="closeModelPicker()">✕</button>
             </div>
-            <input class="model-search" id="modelSearch" type="text" placeholder="Suchen..." oninput="filterModels()">
+            <input class="model-search" id="modelSearch" type="search" placeholder="Suchen..." autocomplete="off" name="model-search" data-1p-ignore oninput="filterModels()">
             <div class="model-list" id="modelList"></div>
         </div>
     </div>
@@ -946,9 +946,9 @@
             </div>
             <div id="pwError" style="color:#f00; font-size:12px; margin-bottom:10px; display:none;"></div>
             <div id="pwSuccess" style="color:#0f0; font-size:12px; margin-bottom:10px; display:none;"></div>
-            <input type="password" id="pwCurrent" name="currentPassword" placeholder="Aktuelles Passwort" autocomplete="current-password" style="background:#111; border:1px solid #333; color:#0f0; padding:10px; font-family:inherit; font-size:13px; width:100%; margin-bottom:10px; border-radius:4px; outline:none;">
-            <input type="password" id="pwNew" name="newPassword" placeholder="Neues Passwort" autocomplete="new-password" style="background:#111; border:1px solid #333; color:#0f0; padding:10px; font-family:inherit; font-size:13px; width:100%; margin-bottom:10px; border-radius:4px; outline:none;">
-            <input type="password" id="pwConfirm" name="confirmPassword" placeholder="Neues Passwort bestätigen" autocomplete="new-password" style="background:#111; border:1px solid #333; color:#0f0; padding:10px; font-family:inherit; font-size:13px; width:100%; margin-bottom:14px; border-radius:4px; outline:none;">
+            <input type="password" id="pwCurrent" name="pw-current" placeholder="Aktuelles Passwort" autocomplete="new-password" data-1p-ignore data-lpignore="true" data-bwignore="true" style="background:#111; border:1px solid #333; color:#0f0; padding:10px; font-family:inherit; font-size:13px; width:100%; margin-bottom:10px; border-radius:4px; outline:none;">
+            <input type="password" id="pwNew" name="pw-new" placeholder="Neues Passwort" autocomplete="new-password" data-1p-ignore data-lpignore="true" data-bwignore="true" style="background:#111; border:1px solid #333; color:#0f0; padding:10px; font-family:inherit; font-size:13px; width:100%; margin-bottom:10px; border-radius:4px; outline:none;">
+            <input type="password" id="pwConfirm" name="pw-confirm" placeholder="Neues Passwort bestätigen" autocomplete="new-password" data-1p-ignore data-lpignore="true" data-bwignore="true" style="background:#111; border:1px solid #333; color:#0f0; padding:10px; font-family:inherit; font-size:13px; width:100%; margin-bottom:14px; border-radius:4px; outline:none;">
             <button class="menu-btn" onclick="submitPasswordChange()">✓ Passwort ändern</button>
         </div>
     </div>
@@ -974,7 +974,7 @@
 
             <!-- Passphrase input (only shown when locked) -->
             <div id="vaultPassphraseSection" style="display:none;">
-                <input type="password" id="vaultPassphrase" placeholder="Vault Passphrase" autocomplete="off" style="background:#111; border:1px solid #333; color:#0f0; padding:10px; font-family:inherit; font-size:13px; width:100%; margin-bottom:12px; border-radius:4px; outline:none;" onkeypress="if(event.key==='Enter')vaultUnlock()">
+                <input type="password" id="vaultPassphrase" name="vault-passphrase" placeholder="Vault Passphrase" autocomplete="new-password" data-1p-ignore data-lpignore="true" data-bwignore="true" style="background:#111; border:1px solid #333; color:#0f0; padding:10px; font-family:inherit; font-size:13px; width:100%; margin-bottom:12px; border-radius:4px; outline:none;" onkeypress="if(event.key==='Enter')vaultUnlock()">
             </div>
 
             <!-- Action buttons -->
