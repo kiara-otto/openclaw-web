@@ -37,6 +37,9 @@ type Client struct {
 	onGatewayConnected func(connected bool)
 	onChatFinal        func(sessionKey, runId, text string)
 
+	// connect challenge (device auth v2+)
+	challenge chan string
+
 	// chat streaming state
 	chatMu     sync.Mutex
 	chatRunId  string // runId we're waiting for
@@ -123,6 +126,10 @@ func (gc *Client) run() error {
 
 	// read-pump in background
 	readErr := make(chan error, 1)
+	challenge := make(chan string, 1)
+	gc.mu.Lock()
+	gc.challenge = challenge
+	gc.mu.Unlock()
 	go func() {
 		for {
 			var msg Msg
@@ -134,8 +141,15 @@ func (gc *Client) run() error {
 		}
 	}()
 
-	// give read-pump a moment
-	time.Sleep(50 * time.Millisecond)
+	// Wait for pre-connect challenge nonce (device auth v2+).
+	var nonce string
+	select {
+	case nonce = <-challenge:
+		// ok
+	case <-time.After(2 * time.Second):
+		conn.Close(websocket.StatusNormalClosure, "")
+		return &Error{Message: "timeout waiting for connect.challenge"}
+	}
 
 	// connect handshake
 	signedAt := time.Now().UnixMilli()
@@ -144,7 +158,8 @@ func (gc *Client) run() error {
 	// from session-admin methods like sessions.delete.
 	clientMode := "ui"
 	scopes := []string{"operator.admin", "operator.write", "operator.read"}
-	payload := buildDeviceAuthPayload("v1", gc.deviceId, clientId, clientMode, "operator", scopes, signedAt, gc.token, "")
+
+	payload := buildDeviceAuthPayload("v2", gc.deviceId, clientId, clientMode, "operator", scopes, signedAt, gc.token, nonce)
 	sig := ""
 	if len(gc.devicePriv) == ed25519.PrivateKeySize {
 		sigBytes := ed25519.Sign(ed25519.PrivateKey(gc.devicePriv), []byte(payload))
@@ -159,6 +174,7 @@ func (gc *Client) run() error {
 			"publicKey": gc.devicePub,
 			"signature": sig,
 			"signedAt":  signedAt,
+			"nonce":     nonce,
 		},
 		"role": "operator", "scopes": scopes,
 		"auth": map[string]string{"token": gc.token},
@@ -216,9 +232,26 @@ func (gc *Client) dispatch(msg Msg) {
 			ch <- msg
 		}
 	case "event":
-		if msg.Event == "chat" {
+		switch msg.Event {
+		case "connect.challenge":
+			var ev struct {
+				Nonce string `json:"nonce"`
+			}
+			_ = json.Unmarshal(msg.Payload, &ev)
+			if ev.Nonce != "" {
+				gc.mu.Lock()
+				ch := gc.challenge
+				gc.mu.Unlock()
+				if ch != nil {
+					select {
+					case ch <- ev.Nonce:
+					default:
+					}
+				}
+			}
+		case "chat":
 			gc.onChat(msg.Payload)
-		} else if msg.Event == "agent" {
+		case "agent":
 			gc.onAgent(msg.Payload)
 		}
 	}
