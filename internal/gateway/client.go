@@ -283,7 +283,22 @@ func (gc *Client) onChat(raw json.RawMessage) {
 	case "delta":
 		text := extractText(raw)
 		if text != "" {
-			gc.chatStream = text
+			// Some gateways/providers emit either:
+			//   (a) accumulated text so far, or
+			//   (b) true deltas (only the newest chunk).
+			// We want gc.chatStream to end up as the full accumulated text.
+			if gc.chatStream == "" {
+				gc.chatStream = text
+			} else if strings.HasPrefix(text, gc.chatStream) {
+				// accumulated
+				gc.chatStream = text
+			} else if len(text) > len(gc.chatStream) && strings.Contains(text, gc.chatStream) {
+				// heuristic: looks like a re-chunked accumulated string
+				gc.chatStream = text
+			} else {
+				// treat as delta chunk
+				gc.chatStream += text
+			}
 		}
 	case "final":
 		text := extractText(raw)
@@ -376,7 +391,13 @@ func extractText(raw json.RawMessage) string {
 		if json.Unmarshal(fullMsg.Content, &blocks) == nil {
 			var parts []string
 			for _, b := range blocks {
-				if b.Type == "text" && b.Text != "" {
+				// Gateways/providers differ: "text", "output_text", "input_text", etc.
+				// Be liberal: if a block has a text field, treat it as text.
+				if b.Text == "" {
+					continue
+				}
+				t := strings.ToLower(strings.TrimSpace(b.Type))
+				if t == "" || t == "text" || strings.Contains(t, "text") {
 					parts = append(parts, b.Text)
 				}
 			}
@@ -394,7 +415,11 @@ func extractText(raw json.RawMessage) string {
 	if json.Unmarshal(ev.Message, &blocks) == nil {
 		var parts []string
 		for _, b := range blocks {
-			if b.Type == "text" {
+			if b.Text == "" {
+				continue
+			}
+			t := strings.ToLower(strings.TrimSpace(b.Type))
+			if t == "" || t == "text" || strings.Contains(t, "text") {
 				parts = append(parts, b.Text)
 			}
 		}

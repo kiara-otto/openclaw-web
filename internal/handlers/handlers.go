@@ -713,8 +713,11 @@ func (s *AppState) sendAgent(sessionKey, message string, atts []struct {
 	}
 
 	// Poll chat.history for the assistant message.
-	deadline := time.Now().Add(120 * time.Second)
+	// Short timeout: if message isn't available quickly, let the UI poll instead.
+	deadline := time.Now().Add(8 * time.Second)
+	iterations := 0
 	for time.Now().Before(deadline) {
+		iterations++
 		histRaw, err := s.gw.Call("chat.history", map[string]interface{}{
 			"sessionKey": sessionKey,
 			"limit":      50,
@@ -740,9 +743,14 @@ func (s *AppState) sendAgent(sessionKey, message string, atts []struct {
 				if m.Role != "assistant" {
 					continue
 				}
-				if ts, ok := parseTimestamp(m.Timestamp); ok {
-					if sentAtMs > 0 && ts.Before(time.UnixMilli(sentAtMs)) {
-						continue
+				// Only check timestamp strictly in the first few iterations.
+				// After 3+ iterations (~3 seconds), accept any assistant message with text,
+				// because agent turns may produce multiple messages with the same/old timestamp.
+				if iterations <= 3 {
+					if ts, ok := parseTimestamp(m.Timestamp); ok {
+						if sentAtMs > 0 && ts.Before(time.UnixMilli(sentAtMs)) {
+							continue
+						}
 					}
 				}
 				text := s.extractContent(m.Content)
@@ -848,23 +856,38 @@ func (s *AppState) HandleHistory(w http.ResponseWriter, r *http.Request) {
 
 // extractContent extracts text from content field
 func (s *AppState) extractContent(raw json.RawMessage) string {
+	// Try as plain string
 	var str string
 	if json.Unmarshal(raw, &str) == nil {
 		return s.stripUserTimestampPrefix(s.stripOpenClawMeta(s.stripModelTags(str)))
 	}
-	var blocks []struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
-	}
+
+	// Try as array of content blocks (may include thinking, text, etc.)
+	var blocks []map[string]interface{}
 	if json.Unmarshal(raw, &blocks) == nil {
 		var parts []string
 		for _, b := range blocks {
-			if b.Type == "text" && b.Text != "" {
-				parts = append(parts, b.Text)
+			typ, _ := b["type"].(string)
+			typ = strings.ToLower(strings.TrimSpace(typ))
+
+			// Extract text from "text" blocks
+			if typ == "text" {
+				if txt, ok := b["text"].(string); ok && txt != "" {
+					parts = append(parts, txt)
+				}
 			}
+			// Skip thinking blocks (they have "thinking" field, not "text")
+			// Skip other non-text blocks
 		}
-		return s.stripUserTimestampPrefix(s.stripOpenClawMeta(s.stripModelTags(strings.Join(parts, ""))))
+		if len(parts) > 0 {
+			return s.stripUserTimestampPrefix(s.stripOpenClawMeta(s.stripModelTags(strings.Join(parts, ""))))
+		}
+		// If we successfully parsed as blocks but found no text blocks, return empty string.
+		// This is correct for intermediate agent messages (thinking/tool use) that don't contain final text yet.
+		return ""
 	}
+
+	// Fallback: treat raw as string (only if we couldn't parse as blocks at all)
 	return s.stripUserTimestampPrefix(s.stripOpenClawMeta(s.stripModelTags(string(raw))))
 }
 
