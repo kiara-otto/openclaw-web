@@ -66,6 +66,37 @@
         .info-pill.offline { color: #f00; border-color: #f00; }
         .info-pill.ctx { color: #888; }
 
+        /* === CHANNEL STATUS === */
+        .channel-status {
+            display: inline-block;
+            width: 28px;
+            height: 28px;
+            line-height: 26px;
+            text-align: center;
+            background: #111;
+            border: 2px solid #666;
+            border-radius: 50%;
+            font-size: 9px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.2s;
+            flex-shrink: 0;
+        }
+        .channel-status.connected {
+            border-color: #0f0;
+            color: #0f0;
+            background: #0a2a0a;
+        }
+        .channel-status.disconnected {
+            border-color: #f00;
+            color: #f00;
+            background: #2a0a0a;
+        }
+        .channel-status:hover {
+            transform: scale(1.1);
+            box-shadow: 0 0 8px currentColor;
+        }
+
         /* === BURGER === */
         .burger-btn {
             background: none;
@@ -846,6 +877,8 @@
             <span class="info-pill model" id="modelPill" onclick="openModelPicker()" title="Click to change model">...</span>
             <span class="info-pill" id="gwPill">...</span>
             <span class="info-pill ctx" id="ctxPill" title="Context tokens used / max">...</span>
+            <span class="channel-status" id="channelWhatsApp" onclick="openChannelDetails('whatsapp')" title="WhatsApp status">WA</span>
+            <span class="channel-status" id="channelDiscord" onclick="openChannelDetails('discord')" title="Discord status">DC</span>
             <button class="burger-btn" onclick="toggleMenu()" title="Menu">☰</button>
         </div>
     </div>
@@ -2732,7 +2765,402 @@
             }
         });
 
+        // === CHANNEL STATUS ===
+
+        let channelsData = {};
+
+        async function loadChannelStatus() {
+            try {
+                const r = await fetch('/api/channels/status');
+                if (!r.ok) return;
+                const data = await r.json();
+                channelsData = {};
+                
+                (data.channels || []).forEach(ch => {
+                    const id = String(ch.id || ch.name || '').toLowerCase();
+                    channelsData[id] = ch;
+                    updateChannelUI(id, ch);
+                });
+            } catch(e) {
+                console.log('Failed to load channel status:', e);
+            }
+        }
+
+        function updateChannelUI(channelId, data) {
+            const elem = document.getElementById('channel' + capitalizeFirst(channelId));
+            if (!elem) return;
+            
+            const connected = data.connected || data.status === 'connected';
+            elem.className = 'channel-status ' + (connected ? 'connected' : 'disconnected');
+        }
+
+        function capitalizeFirst(str) {
+            return str.charAt(0).toUpperCase() + str.slice(1);
+        }
+
+        async function openChannelDetails(channel) {
+            const modal = document.getElementById('channelModal');
+            const title = document.getElementById('channelModalTitle');
+            const body = document.getElementById('channelModalBody');
+            
+            title.textContent = capitalizeFirst(channel) + ' Status';
+            body.innerHTML = '<p>Loading...</p>';
+            modal.style.display = 'block';
+            
+            const data = channelsData[channel] || {};
+            const connected = data.connected || data.status === 'connected';
+            
+            let html = '';
+            html += '<div class="channel-detail-row">';
+            html += '<span class="channel-detail-label">Status</span>';
+            html += '<span class="channel-detail-value ' + (connected ? '' : 'disconnected') + '">';
+            html += connected ? '● Connected' : '○ Disconnected';
+            html += '</span>';
+            html += '</div>';
+            
+            if (data.user) {
+                html += '<div class="channel-detail-row">';
+                html += '<span class="channel-detail-label">User</span>';
+                html += '<span class="channel-detail-value">' + escHtml(data.user) + '</span>';
+                html += '</div>';
+            }
+            
+            if (channel === 'whatsapp' && !connected) {
+                html += '<div style="margin-top: 20px;">';
+                html += '<button class="channel-reauth-btn" onclick="triggerWhatsAppReauth()">🔗 Connect WhatsApp</button>';
+                html += '<div id="whatsappQRContainer"></div>';
+                html += '</div>';
+            }
+            
+            html += '<div class="channel-sessions-list" id="channelSessionsList">';
+            html += '<h4 style="margin-top: 20px; color: #888;">Active Sessions</h4>';
+            html += '<p style="color:#888;">Loading sessions...</p>';
+            html += '</div>';
+            
+            body.innerHTML = html;
+            
+            // Load sessions
+            loadChannelSessions(channel);
+        }
+
+        async function loadChannelSessions(channel) {
+            try {
+                const r = await fetch('/api/channels/sessions?channel=' + encodeURIComponent(channel));
+                if (!r.ok) return;
+                const data = await r.json();
+                
+                const container = document.getElementById('channelSessionsList');
+                if (!container) return;
+                
+                let html = '<h4 style="margin-top: 20px; color: #888;">Active Sessions (' + (data.sessions || []).length + ')</h4>';
+                
+                if (!data.sessions || data.sessions.length === 0) {
+                    html += '<p style="color:#666;">No active sessions</p>';
+                } else {
+                    data.sessions.forEach(s => {
+                        const sessKey = s.key || '';
+                        const sessJson = escHtml(JSON.stringify(s));
+                        const mainLabel = s.label || s.displayName || s.name || s.target || sessKey || 'Unknown';
+                        
+                        html += '<div class="channel-session-item-wrapper" style="display:flex; align-items:center; gap:8px; margin-bottom:8px;">';
+                        
+                        // Main session info (clickable to load)
+                        html += '<div class="channel-session-item" style="flex:1; cursor:pointer;" onclick=\'loadChannelSession(' + sessJson + ')\'>';
+                        
+                        // Main label/name
+                        html += '<div style="font-weight:bold;">' + escHtml(mainLabel) + '</div>';
+                        
+                        // Secondary info (target/phone/group)
+                        if (s.target && s.target !== mainLabel) {
+                            html += '<div style="font-size:12px; color:#888; margin-top:2px;">' + escHtml(s.target) + '</div>';
+                        }
+                        
+                        // Kind (e.g. "channel:whatsapp:group")
+                        if (s.kind) {
+                            html += '<div style="font-size:10px; color:#666; margin-top:2px;">' + escHtml(s.kind) + '</div>';
+                        }
+                        
+                        // Session key (technical)
+                        html += '<div class="channel-session-item-key">' + escHtml(sessKey) + '</div>';
+                        
+                        html += '</div>';
+                        
+                        // Reset button (clears history but keeps pairing)
+                        html += '<button class="channel-session-delete-btn" onclick=\'deleteChannelSession("' + escHtml(sessKey) + '", "' + escHtml(mainLabel) + '"); event.stopPropagation();\' title="Reset session (clear history, keep pairing)">🔄</button>';
+                        
+                        html += '</div>';
+                    });
+                }
+                
+                container.innerHTML = html;
+            } catch(e) {
+                console.log('Failed to load channel sessions:', e);
+            }
+        }
+
+        async function triggerWhatsAppReauth() {
+            const btn = event.target;
+            btn.disabled = true;
+            btn.textContent = 'Requesting QR...';
+            
+            try {
+                const r = await fetch('/api/channels/whatsapp/qr?action=start');
+                if (!r.ok) throw new Error('Failed to get QR');
+                const data = await r.json();
+                
+                const container = document.getElementById('whatsappQRContainer');
+                if (!container) return;
+                
+                if (data.qr) {
+                    container.innerHTML = '<div class="channel-qr-container"><img src="' + data.qr + '" alt="WhatsApp QR Code" /><p style="color:#888;margin-top:10px;">Scan with WhatsApp app</p></div>';
+                } else if (data.status === 'connected') {
+                    container.innerHTML = '<p style="color:#0f0;">✓ Already connected</p>';
+                } else {
+                    container.innerHTML = '<p style="color:#f00;">QR code not available</p>';
+                }
+                
+                btn.textContent = 'Refresh QR';
+                btn.disabled = false;
+            } catch(e) {
+                console.log('Failed to trigger WhatsApp reauth:', e);
+                btn.textContent = 'Retry';
+                btn.disabled = false;
+            }
+        }
+
+        function loadChannelSession(sessData) {
+            closeChannelModal();
+            switchToSession(sessData.key, sessData);
+        }
+
+        async function deleteChannelSession(sessionKey, sessionName) {
+            if (!confirm('Reset session "' + sessionName + '"?\n\nThis will clear the conversation history but keep the pairing/connection.')) {
+                return;
+            }
+            
+            try {
+                // For channel sessions, use chat.send with /reset instead of sessions.delete
+                // to preserve pairing information (WhatsApp allowFrom, Discord DM channel, etc.)
+                const r = await fetch('/api/chat', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        sessionKey: sessionKey,
+                        message: '/reset'
+                    })
+                });
+                const data = await r.json();
+                if (data.error) {
+                    alert('Reset failed: ' + data.error);
+                } else {
+                    // Reload channel sessions to show updated state
+                    const channel = document.getElementById('channelModalTitle').textContent.toLowerCase().split(' ')[0];
+                    loadChannelSessions(channel);
+                    // Show success
+                    alert('Session reset successfully. The connection is preserved and new messages will work.');
+                }
+            } catch(e) {
+                alert('Reset failed: ' + e.message);
+            }
+        }
+
+        function closeChannelModal(event) {
+            if (event && event.target.className !== 'channel-modal') return;
+            document.getElementById('channelModal').style.display = 'none';
+        }
+
+        // Add channel status events to SSE
+        const originalStartEventStream = startEventStream;
+        startEventStream = function() {
+            originalStartEventStream();
+            
+            if (eventSource) {
+                eventSource.addEventListener('channel', (e) => {
+                    try {
+                        const data = JSON.parse(e.data);
+                        const id = String(data.id || data.name || '').toLowerCase();
+                        if (id) {
+                            channelsData[id] = data;
+                            updateChannelUI(id, data);
+                        }
+                    } catch(err) {
+                        console.log('Channel event parse error:', err);
+                    }
+                });
+            }
+        };
+
         init();
+        
+        // Load channel status after init
+        setTimeout(() => {
+            loadChannelStatus();
+            setInterval(loadChannelStatus, 30000); // refresh every 30s
+        }, 500);
     </script>
+
+    <!-- CHANNEL DETAILS MODAL -->
+    <div id="channelModal" class="channel-modal" onclick="closeChannelModal(event)" style="display:none;">
+        <div class="channel-modal-content" onclick="event.stopPropagation()">
+            <div class="channel-modal-header">
+                <h3 id="channelModalTitle">Channel Status</h3>
+                <button class="channel-modal-close" onclick="closeChannelModal()">&times;</button>
+            </div>
+            <div class="channel-modal-body" id="channelModalBody">
+                Loading...
+            </div>
+        </div>
+    </div>
+
+    <style>
+        .channel-modal {
+            display: none;
+            position: fixed;
+            z-index: 10000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.7);
+            backdrop-filter: blur(4px);
+        }
+        .channel-modal-content {
+            position: relative;
+            background: #0a0a0a;
+            border: 1px solid #0f0;
+            border-radius: 8px;
+            margin: 10% auto;
+            padding: 0;
+            max-width: 600px;
+            box-shadow: 0 0 20px #0f0;
+            animation: modalSlideIn 0.3s;
+        }
+        @keyframes modalSlideIn {
+            from { transform: translateY(-50px); opacity: 0; }
+            to { transform: translateY(0); opacity: 1; }
+        }
+        .channel-modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 16px 20px;
+            border-bottom: 1px solid #333;
+        }
+        .channel-modal-header h3 {
+            margin: 0;
+            color: #0f0;
+            font-size: 18px;
+        }
+        .channel-modal-close {
+            background: none;
+            border: none;
+            color: #888;
+            font-size: 28px;
+            cursor: pointer;
+            line-height: 1;
+            padding: 0;
+            width: 32px;
+            height: 32px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .channel-modal-close:hover {
+            color: #f00;
+        }
+        .channel-modal-body {
+            padding: 20px;
+            color: #ccc;
+            max-height: 70vh;
+            overflow-y: auto;
+        }
+        .channel-detail-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 8px 0;
+            border-bottom: 1px solid #222;
+        }
+        .channel-detail-row:last-child {
+            border-bottom: none;
+        }
+        .channel-detail-label {
+            font-weight: bold;
+            color: #888;
+        }
+        .channel-detail-value {
+            color: #0f0;
+        }
+        .channel-detail-value.disconnected {
+            color: #f00;
+        }
+        .channel-qr-container {
+            text-align: center;
+            margin: 20px 0;
+        }
+        .channel-qr-container img {
+            max-width: 300px;
+            border: 2px solid #0f0;
+            border-radius: 8px;
+            background: white;
+            padding: 10px;
+        }
+        .channel-sessions-list {
+            margin-top: 20px;
+        }
+        .channel-session-item {
+            padding: 8px 12px;
+            background: #111;
+            border-left: 3px solid #0f0;
+            border-radius: 4px;
+            transition: background 0.2s;
+        }
+        .channel-session-item:hover {
+            background: #1a1a1a;
+        }
+        .channel-session-item-key {
+            font-size: 11px;
+            color: #888;
+            font-family: monospace;
+        }
+        .channel-session-delete-btn {
+            background: #2a0a0a;
+            border: 1px solid #f00;
+            color: #f00;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 18px;
+            width: 36px;
+            height: 36px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+            transition: all 0.2s;
+        }
+        .channel-session-delete-btn:hover {
+            background: #f00;
+            color: #000;
+            transform: scale(1.1);
+        }
+        .channel-reauth-btn {
+            margin-top: 16px;
+            padding: 10px 20px;
+            background: #0a2a0a;
+            border: 1px solid #0f0;
+            color: #0f0;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: bold;
+        }
+        .channel-reauth-btn:hover {
+            background: #0f0;
+            color: #000;
+        }
+        .channel-reauth-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+    </style>
 </body>
 </html>

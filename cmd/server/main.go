@@ -67,6 +67,9 @@ func main() {
 	mux.HandleFunc("/api/session-delete", state.HandleSessionDelete)
 	mux.HandleFunc("/api/session-info", state.HandleSessionInfo)
 	mux.HandleFunc("/api/log", state.HandleLog)
+	mux.HandleFunc("/api/channels/status", state.HandleChannelsStatus)
+	mux.HandleFunc("/api/channels/whatsapp/qr", state.HandleWhatsAppQR)
+	mux.HandleFunc("/api/channels/sessions", state.HandleChannelSessions)
 	mux.HandleFunc("/media", state.HandleMedia)
 	mux.HandleFunc("/", state.HandleIndex)
 
