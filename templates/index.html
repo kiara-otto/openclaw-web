@@ -444,6 +444,21 @@
             border-radius: 12px;
             font-size: 12px;
         }
+
+        .msg-image {
+            display: block;
+            max-width: 100%;
+            height: auto;
+            margin-top: 8px;
+            border: 1px solid #0f0;
+            border-radius: 6px;
+        }
+        .msg-image-error {
+            margin-top: 6px;
+            font-size: 11px;
+            color: #f00;
+            opacity: 0.9;
+        }
         /* When timestamp follows: remove bottom rounding from bubble */
         .msg-wrapper.has-time .msg.user {
             border-radius: 12px 12px 0 12px;
@@ -645,6 +660,11 @@
             color: #555;
         }
         #refreshBtn:hover { border-color: #0f0; color: #0f0; background: transparent; }
+
+        #attachBtn {
+            padding: 10px 12px;
+            font-size: 16px;
+        }
         /* Abort button — keep it "Matrix" (outline) and consistent with the UI */
         .abort-btn {
             border-color: #0f0;
@@ -854,6 +874,8 @@
         </div>
         <form class="chat-input-bar" autocomplete="off" onsubmit="return false;" role="presentation">
             <button type="button" id="refreshBtn" onclick="refreshChat()" title="Chat neu laden">↻</button>
+            <button type="button" id="attachBtn" onclick="openFilePicker()" title="Bild anhängen">＋</button>
+            <input type="file" id="fileInput" accept="image/*" style="display:none" onchange="handleFilePicked(event)" />
             <textarea id="messageInput" name="q" placeholder="Nachricht an OpenClaw Web..." autocomplete="nope" role="presentation" onkeydown="handleInputKeydown(event)" rows="1"></textarea>
             <button type="button" id="sendBtn" onclick="sendMessage()">➤</button>
         </form>
@@ -1008,6 +1030,10 @@
         let models = [];
         let currentModel = '';
         let modelSetAt = 0; // timestamp of last manual model switch
+
+        // Pending image attachments for the next send.
+        // Each entry: {name, mimeType, content(base64)}
+        let pendingAttachments = [];
 
         // Auto-scroll handling:
         // - Keep the view pinned to bottom while the user is at/near the bottom.
@@ -1419,13 +1445,57 @@
             el.style.height = Math.min(el.scrollHeight, 140) + 'px';
         }
 
+        function openFilePicker() {
+            const el = document.getElementById('fileInput');
+            if (el) el.click();
+        }
+
+        async function handleFilePicked(ev) {
+            const input = ev && ev.target ? ev.target : null;
+            if (!input || !input.files || !input.files.length) return;
+            const file = input.files[0];
+            // reset input so picking the same file again works
+            input.value = '';
+
+            if (!file.type || !file.type.startsWith('image/')) {
+                addMessage('error', 'Nur Bilder sind aktuell unterstützt.');
+                return;
+            }
+            if (file.size > 5 * 1024 * 1024) {
+                addMessage('error', 'Bild ist zu groß (max 5 MB).');
+                return;
+            }
+
+            const b64 = await new Promise((resolve, reject) => {
+                const r = new FileReader();
+                r.onload = () => {
+                    const res = String(r.result || '');
+                    // data:<mime>;base64,<...>
+                    const idx = res.indexOf('base64,');
+                    if (idx >= 0) resolve(res.slice(idx + 7));
+                    else reject(new Error('Could not read file as base64'));
+                };
+                r.onerror = () => reject(r.error || new Error('FileReader error'));
+                r.readAsDataURL(file);
+            });
+
+            pendingAttachments = [{
+                name: file.name || 'image',
+                mimeType: file.type || 'image/png',
+                content: b64
+            }];
+
+            // Lightweight UI hint
+            addMessage('user', '[Bild angehängt: ' + (file.name || 'image') + ']', Date.now(), {attachments: [{name: file.name, mimeType: file.type, size: file.size}]});
+        }
+
         async function sendMessage() {
             const input = document.getElementById('messageInput');
             const msg = input.value.trim();
-            if (!msg || sending) return;
+            if ((!msg && pendingAttachments.length === 0) || sending) return;
 
             const sentAt = Date.now();
-            const requestBody = {message: msg};
+            const requestBody = {message: msg, attachments: pendingAttachments};
             
             // Include sessionKey if viewing a foreign session
             if (activeSessionKey && activeSessionKey !== defaultSessionKey) {
@@ -1493,6 +1563,7 @@
                 addMessage('error', 'Network error: ' + e.message);
             } finally {
                 sending = false;
+                pendingAttachments = [];
                 document.getElementById('sendBtn').disabled = false;
                 document.getElementById('messageInput').focus();
             }
@@ -1556,6 +1627,22 @@
             setProcessing(false, '');
         }
 
+        function parseMediaLines(text) {
+            const lines = String(text || '').split('\n');
+            const media = [];
+            const keep = [];
+            lines.forEach(l => {
+                const t = l.trim();
+                if (t.startsWith('MEDIA:')) {
+                    const p = t.slice(6).trim();
+                    if (p) media.push(p);
+                } else {
+                    keep.push(l);
+                }
+            });
+            return { text: keep.join('\n').trim(), media };
+        }
+
         function addMessage(type, text, timestamp, debugData) {
             const chat = document.getElementById('chat');
             const wrapper = document.createElement('div');
@@ -1566,7 +1653,38 @@
 
             const bubble = document.createElement('div');
             bubble.className = 'msg ' + type;
-            bubble.textContent = text;
+
+            const parsed = parseMediaLines(text);
+            bubble.textContent = parsed.text;
+
+            // Render media if present
+            if (parsed.media && parsed.media.length) {
+                parsed.media.forEach(p => {
+                    const img = document.createElement('img');
+                    img.src = '/media?path=' + encodeURIComponent(p);
+                    img.className = 'msg-image';
+                    img.loading = 'lazy';
+                    img.onclick = () => window.open(img.src, '_blank');
+
+                    // If image loads after layout, keep the viewport pinned.
+                    img.onload = () => {
+                        try { scrollToBottom(true); } catch(e) {}
+                    };
+                    img.onerror = () => {
+                        try {
+                            const err = document.createElement('div');
+                            err.className = 'msg-image-error';
+                            err.textContent = '[Bild konnte nicht geladen werden]';
+                            bubble.appendChild(err);
+                            scrollToBottom(true);
+                        } catch(e) {}
+                    };
+
+                    bubble.appendChild(document.createElement('br'));
+                    bubble.appendChild(img);
+                });
+            }
+
             wrapper.appendChild(bubble);
 
             // Aborted marker
@@ -1589,6 +1707,15 @@
             }
 
             chat.appendChild(wrapper);
+
+            // If media is present, layout can change after the image loads.
+            // Do an extra tick scroll so it appears immediately without requiring refresh.
+            if (parsed && parsed.media && parsed.media.length) {
+                setTimeout(() => {
+                    try { scrollToBottom(true); } catch(e) {}
+                }, 50);
+            }
+
             // Always keep the user's own messages in view; otherwise only stick to bottom
             // when the user is already at/near the bottom and not interacting.
             scrollToBottom(type === 'user' || type === 'error');

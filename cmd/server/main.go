@@ -67,6 +67,7 @@ func main() {
 	mux.HandleFunc("/api/session-delete", state.HandleSessionDelete)
 	mux.HandleFunc("/api/session-info", state.HandleSessionInfo)
 	mux.HandleFunc("/api/log", state.HandleLog)
+	mux.HandleFunc("/media", state.HandleMedia)
 	mux.HandleFunc("/", state.HandleIndex)
 
 	handler := state.IPMiddleware(state.AuthMiddleware(mux))

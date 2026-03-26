@@ -1,8 +1,11 @@
 package handlers
 
 import (
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"html/template"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -478,6 +481,13 @@ func (s *AppState) HandleChat(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Message    string `json:"message"`
 		SessionKey string `json:"sessionKey,omitempty"`
+		// Optional inline attachments for multimodal turns (images).
+		// Content is base64 (standard, with padding).
+		Attachments []struct {
+			Name     string `json:"name"`
+			MimeType string `json:"mimeType"`
+			Content  string `json:"content"`
+		} `json:"attachments,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid request", http.StatusBadRequest)
@@ -498,31 +508,44 @@ func (s *AppState) HandleChat(w http.ResponseWriter, r *http.Request) {
 
 	var resp string
 	var err error
+
+	// If we have attachments, send via the `agent` gateway method (supports inline attachments).
+	// Otherwise, use the standard chat.send flow.
+	hasAttachments := len(req.Attachments) > 0
+
 	if req.SessionKey != "" && req.SessionKey != s.config.SessionKey {
 		// Send to foreign session
-		idempotencyKey := auth.RandomID()
-		raw, callErr := s.gw.Call("chat.send", map[string]interface{}{
-			"sessionKey":     req.SessionKey,
-			"message":        req.Message,
-			"deliver":        true,
-			"idempotencyKey": idempotencyKey,
-		})
-		if callErr != nil {
-			err = callErr
+		if hasAttachments {
+			resp, err = s.sendAgent(req.SessionKey, req.Message, req.Attachments, true, sentAt)
 		} else {
-			var sendResp struct {
-				RunId string `json:"runId"`
-			}
-			if json.Unmarshal(raw, &sendResp) == nil && sendResp.RunId != "" {
-				s.setActiveRun(req.SessionKey, sendResp.RunId)
-				resp = "[sent to " + req.SessionKey + "]"
+			idempotencyKey := auth.RandomID()
+			raw, callErr := s.gw.Call("chat.send", map[string]interface{}{
+				"sessionKey":     req.SessionKey,
+				"message":        req.Message,
+				"deliver":        true,
+				"idempotencyKey": idempotencyKey,
+			})
+			if callErr != nil {
+				err = callErr
 			} else {
-				resp = "[sent]"
+				var sendResp struct {
+					RunId string `json:"runId"`
+				}
+				if json.Unmarshal(raw, &sendResp) == nil && sendResp.RunId != "" {
+					s.setActiveRun(req.SessionKey, sendResp.RunId)
+					resp = "[sent to " + req.SessionKey + "]"
+				} else {
+					resp = "[sent]"
+				}
 			}
 		}
 	} else {
 		// Default session
-		resp, err = s.sendChat(req.Message)
+		if hasAttachments {
+			resp, err = s.sendAgent(s.config.SessionKey, req.Message, req.Attachments, false, sentAt)
+		} else {
+			resp, err = s.sendChat(req.Message)
+		}
 	}
 
 	receivedAt := time.Now().UnixMilli()
@@ -631,6 +654,109 @@ func (s *AppState) sendChat(message string) (string, error) {
 
 	s.clearActiveRun(s.config.SessionKey)
 	return s.gw.GetChatText(), nil
+}
+
+// sendAgent sends a message using the Gateway `agent` method (supports inline attachments),
+// then polls chat.history for the assistant response.
+func (s *AppState) sendAgent(sessionKey, message string, atts []struct {
+	Name     string `json:"name"`
+	MimeType string `json:"mimeType"`
+	Content  string `json:"content"`
+}, deliver bool, sentAtMs int64) (string, error) {
+	idempotencyKey := auth.RandomID()
+
+	// Convert attachments to the gateway format.
+	// NOTE: We accept base64 *with padding* from the browser, then forward as-is.
+	// The gateway validates / clamps size.
+	attachments := make([]map[string]interface{}, 0, len(atts))
+	for _, a := range atts {
+		name := strings.TrimSpace(a.Name)
+		if name == "" {
+			name = "upload"
+		}
+		mime := strings.TrimSpace(a.MimeType)
+		if mime == "" {
+			mime = "application/octet-stream"
+		}
+		content := strings.TrimSpace(a.Content)
+		if content == "" {
+			continue
+		}
+		// Basic sanity: ensure it's base64-decodable before sending.
+		if _, err := base64.StdEncoding.DecodeString(content); err != nil {
+			return "", &gateway.Error{Message: fmt.Sprintf("invalid base64 attachment (%s): %v", name, err)}
+		}
+		attachments = append(attachments, map[string]interface{}{
+			"name":     name,
+			"mimeType": mime,
+			"content":  content,
+			"encoding": "base64",
+		})
+	}
+
+	raw, err := s.gw.Call("agent", map[string]interface{}{
+		"sessionKey":     sessionKey,
+		"message":        message,
+		"deliver":        deliver,
+		"idempotencyKey": idempotencyKey,
+		"attachments":    attachments,
+	})
+	if err != nil {
+		return "", err
+	}
+
+	var runResp struct {
+		RunId string `json:"runId"`
+	}
+	if json.Unmarshal(raw, &runResp) == nil && runResp.RunId != "" {
+		s.setActiveRun(sessionKey, runResp.RunId)
+	}
+
+	// Poll chat.history for the assistant message.
+	deadline := time.Now().Add(120 * time.Second)
+	for time.Now().Before(deadline) {
+		histRaw, err := s.gw.Call("chat.history", map[string]interface{}{
+			"sessionKey": sessionKey,
+			"limit":      50,
+		})
+		if err == nil {
+			// Try both possible shapes: {messages:[...]} or [...]
+			type rawMsg struct {
+				Role      string          `json:"role"`
+				Content   json.RawMessage `json:"content"`
+				Timestamp interface{}     `json:"timestamp"`
+			}
+			var wrapper struct {
+				Messages []rawMsg `json:"messages"`
+			}
+			msgs := []rawMsg{}
+			if json.Unmarshal(histRaw, &wrapper) == nil && len(wrapper.Messages) > 0 {
+				msgs = wrapper.Messages
+			} else {
+				_ = json.Unmarshal(histRaw, &msgs)
+			}
+			for i := len(msgs) - 1; i >= 0; i-- {
+				m := msgs[i]
+				if m.Role != "assistant" {
+					continue
+				}
+				if ts, ok := parseTimestamp(m.Timestamp); ok {
+					if sentAtMs > 0 && ts.Before(time.UnixMilli(sentAtMs)) {
+						continue
+					}
+				}
+				text := s.extractContent(m.Content)
+				if text != "" {
+					s.clearActiveRun(sessionKey)
+					return text, nil
+				}
+			}
+		}
+		time.Sleep(900 * time.Millisecond)
+	}
+
+	s.clearActiveRun(sessionKey)
+	return "", &gateway.Error{Message: "chat timeout"}
 }
 
 // HandleHistory returns chat history
@@ -1407,6 +1533,71 @@ func tailFile(path string, count int, beforeLine int) ([]string, int, error) {
 	}
 
 	return allLines[start:end], total, nil
+}
+
+// HandleMedia serves image files referenced by MEDIA:<path> lines.
+// Security: we only serve files under a small allowlist of roots.
+func (s *AppState) HandleMedia(w http.ResponseWriter, r *http.Request) {
+	// Note: AuthMiddleware applies to non-API paths too, so this endpoint requires login.
+	p := strings.TrimSpace(r.URL.Query().Get("path"))
+	if p == "" {
+		http.Error(w, "path required", http.StatusBadRequest)
+		return
+	}
+
+	// Clean + resolve.
+	p = filepath.Clean(p)
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		http.Error(w, "bad path", http.StatusBadRequest)
+		return
+	}
+
+	home, _ := os.UserHomeDir()
+	roots := []string{
+		filepath.Join(home, ".openclaw", "workspace"),
+		filepath.Join(home, ".openclaw", "media"),
+		filepath.Join(home, ".openclaw", "tmp"),
+	}
+
+	allowed := false
+	for _, root := range roots {
+		rootAbs, _ := filepath.Abs(root)
+		if rootAbs != "" && (abs == rootAbs || strings.HasPrefix(abs, rootAbs+string(os.PathSeparator))) {
+			allowed = true
+			break
+		}
+	}
+	if !allowed {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+
+	f, err := os.Open(abs)
+	if err != nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	defer f.Close()
+
+	// Only allow common image extensions.
+	ext := strings.ToLower(filepath.Ext(abs))
+	switch ext {
+	case ".png", ".jpg", ".jpeg", ".gif", ".webp":
+		// ok
+	default:
+		http.Error(w, "unsupported media type", http.StatusUnsupportedMediaType)
+		return
+	}
+
+	w.Header().Set("Cache-Control", "private, max-age=60")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	// Let net/http sniff it.
+	buf := make([]byte, 512)
+	n, _ := f.Read(buf)
+	_, _ = f.Seek(0, io.SeekStart)
+	w.Header().Set("Content-Type", http.DetectContentType(buf[:n]))
+	_, _ = io.Copy(w, f)
 }
 
 // HandleLogin handles login
