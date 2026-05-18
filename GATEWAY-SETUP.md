@@ -70,7 +70,7 @@ func main() {
 }
 ```
 
-**go run main.go** → kopiere die Ausgabe in `config.json`.
+**go run ./cmd/server --config config.json** → kopiere die Ausgabe in `config.json`.
 
 **Hinweis:** Die Keys sind **optional** — die Web-App funktioniert mit Token allein. Nur für **erweiterte Features** (z.B. Node-Control, Pairing) nötig.
 
@@ -89,7 +89,7 @@ Beispiel (anpassen!):
   "device_private_key": "optional-privkey-base64",
   "username": "admin",
   "password_hash": "base64-sha256-hash-deines-passworts",
-  "openclaw_config": "/Users/christianotto/.openclaw/openclaw.json",
+  "openclaw_config": "$HOME/.openclaw/openclaw.json",
   "session_key": "agent:main:openclaw-web",
   "display_name": "OpenClaw Web"
 }
@@ -115,7 +115,7 @@ curl http://localhost:18789/health
 
 ```bash
 cd openclaw-web
-go run . -config config.json
+go run ./cmd/server --config config.json
 ```
 
 **Erfolgreiche Logs:**
@@ -244,7 +244,7 @@ server {
 3. **Web-App:** 
    ```bash
    cd openclaw-web
-   go build -o openclaw-web .
+   go build -o openclaw-web ./cmd/server
    nohup ./openclaw-web &
    ```
 4. **Firewall:** Port 8080 öffnen (ufw/nginx).
@@ -260,7 +260,7 @@ server {
 ### Laptop / Development
 
 1. **Gateway:** `openclaw gateway start --bind loopback`
-2. **Web-App:** `go run .` (im Projekt-Ordner).
+2. **Web-App:** `go run ./cmd/server --config config.json` (im Projekt-Ordner).
 3. **Zugriff:** Nur lokal (`http://localhost:8080`).
 
 ## Logs + Debugging

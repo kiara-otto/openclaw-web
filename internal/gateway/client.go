@@ -167,7 +167,7 @@ func (gc *Client) run() error {
 	}
 
 	_, err = gc.call(ctx, "connect", map[string]interface{}{
-		"minProtocol": 3, "maxProtocol": 3,
+		"minProtocol": 4, "maxProtocol": 4,
 		"client": map[string]string{"id": clientId, "version": "1.0.0", "platform": "go", "mode": clientMode},
 		"device": map[string]interface{}{
 			"id":        gc.deviceId,

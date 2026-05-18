@@ -227,7 +227,7 @@ go mod download
 ### 3.2 App starten (Foreground)
 
 ```bash
-go run .
+go run ./cmd/server --config config.json
 ```
 
 **Erwartete Ausgabe:**
@@ -238,6 +238,8 @@ Gateway: http://localhost:18789 | Session: agent:main:openclaw-web
 ```
 
 ✅ **"[gw] connected"** → Gateway-Verbindung steht!
+
+**Wenn stattdessen `protocol mismatch` im Log steht:** Das Binary spricht eine alte Gateway-Protokollversion. Für aktuelle OpenClaw-Builds muss `internal/gateway/client.go` auf **Protocol v4** gebaut werden.
 
 ---
 
@@ -316,7 +318,7 @@ nano ~/openclaw-web/config.json
 # "gateway_token" auf exakt den gleichen Wert setzen
 
 # 3. Web-App neu starten
-go run .
+go run ./cmd/server --config config.json
 ```
 
 ---
@@ -335,6 +337,24 @@ tail -50 ~/openclaw-web/openclaw-web.log
 
 # 3. Token + URL nochmal kontrollieren
 cat ~/openclaw-web/config.json | jq -r '.gateway_url, .gateway_token'
+```
+
+---
+
+### Fehler: "protocol mismatch"
+
+**Ursache:** `openclaw-web` und Gateway verwenden unterschiedliche WebSocket-Protokollversionen.
+
+**Lösung:**
+```bash
+# 1. Web-App neu bauen
+go build -o openclaw-web ./cmd/server
+
+# 2. Sicherstellen, dass der Client Protocol v4 anfragt
+rg -n 'minProtocol|maxProtocol' internal/gateway/client.go
+
+# 3. Web-App neu starten und Logs erneut prüfen
+go run ./cmd/server --config config.json
 ```
 
 ---
@@ -411,7 +431,7 @@ tail -20 ~/.openclaw/logs/gateway.log
 ```bash
 # 1. Binary kompilieren
 cd ~/openclaw-web
-go build -o openclaw-web .
+go build -o openclaw-web ./cmd/server
 
 # 2. Systemd-Service erstellen
 sudo nano /etc/systemd/system/openclaw-web.service

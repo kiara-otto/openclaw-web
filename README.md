@@ -108,6 +108,8 @@ Nach dem Start der Web-App sollte im Log erscheinen:
 
 Falls nicht, siehe **[GATEWAY-SETUP.md](GATEWAY-SETUP.md)** für detailliertes Troubleshooting!
 
+**Hinweis nach OpenClaw-Updates:** Der aktuelle Gateway-Handshake läuft auf **Protocol v4**. Wenn nach einem OpenClaw-Update `protocol mismatch` im Log steht, muss `openclaw-web` gegen die neue Gateway-Version neu gebaut werden.
+
 ## Troubleshooting
 
 Probleme mit der Gateway-Verbindung? Siehe **[GATEWAY-SETUP.md](GATEWAY-SETUP.md)** für:
@@ -143,21 +145,33 @@ Im Web-App-Log sollte stehen:
 
 ```bash
 # macOS / amd64
-go build -o openclaw-web .
+go build -o openclaw-web ./cmd/server
 
 # Raspberry Pi 5 / arm64
-GOOS=linux GOARCH=arm64 go build -o openclaw-web-arm64 .
+GOOS=linux GOARCH=arm64 go build -o openclaw-web-arm64 ./cmd/server
 ```
+
+## Lokaler Test-Checkout
+
+Für einen sicheren Testlauf neben der produktiven Instanz:
+
+```bash
+cp /path/to/your/current/openclaw-web/config.json config.test.json
+jq '.port = "8081" | .session_key = "agent:main:kiara-web-test" | .display_name = "Kiara Test"' config.test.json > /tmp/openclaw-web-config && mv /tmp/openclaw-web-config config.test.json
+go run ./cmd/server --config config.test.json
+```
+
+So bleibt die Hauptinstanz auf `8080` unangetastet, während der Test-Server auf `8081` läuft.
 
 ## Server starten
 
 ```bash
 # Im Vordergrund
-./openclaw-web
+go run ./cmd/server --config config.json
 
 # Oder im Hintergrund (Linux/macOS mit LaunchD)
 # Die PID wird in openclaw-web.pid gespeichert
-nohup ./openclaw-web & echo $! > openclaw-web.pid
+nohup ./openclaw-web --config config.json & echo $! > openclaw-web.pid
 ```
 
 ## Server stoppen
